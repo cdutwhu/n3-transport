@@ -1,0 +1,6 @@
+influx_addr = "http://localhost:8086"
+lb_addr = "localhost:9292"
+nats_addr = "nats://localhost:4222"
+privkey = "3bkn52XLHayj3WcCdTfefgYQmmVpM99ifjFnxmqB2uYb"
+pubkey = "DZy75tGr7FazkFGbmmcyxZAFMxhBdWhSSNg2STsN7E4i"
+rpc_port = 5777

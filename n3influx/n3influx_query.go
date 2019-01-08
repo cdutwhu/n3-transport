@@ -18,7 +18,7 @@ var (
 // SubExist :
 func (n3ic *Publisher) SubExist(tuple *pb.SPOTuple, contextName, db string) bool {
 	// pln("checking subject ...")
-	qStr := spf("SELECT object, version FROM %s WHERE subject = '%s' ORDER BY time DESC LIMIT 1", contextName, tuple.Subject)
+	qStr := spf("SELECT object, version FROM \"%s\" WHERE subject = '%s' ORDER BY time DESC LIMIT 1", contextName, tuple.Subject)
 	resp, err := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
 	PE(err)
 	PE(resp.Error())
@@ -30,7 +30,7 @@ func (n3ic *Publisher) GetObj(tuple *pb.SPOTuple, offset int, isArray bool, cont
 	// pln("looking for object ...")
 	// if !isArray {
 	subject, predicate := tuple.Subject, tuple.Predicate
-	qStr := spf("SELECT object, version FROM %s WHERE subject = '%s' AND predicate = '%s' ORDER BY time DESC LIMIT 1 OFFSET %d", contextName, subject, predicate, offset)
+	qStr := spf("SELECT object, version FROM \"%s\" WHERE subject = '%s' AND predicate = '%s' ORDER BY time DESC LIMIT 1 OFFSET %d", contextName, subject, predicate, offset)
 	resp, err := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
 	PE(err)
 	PE(resp.Error())
@@ -53,7 +53,7 @@ func (n3ic *Publisher) GetSubStruct(tuple *pb.SPOTuple, contextName, db string) 
 	// pln("looking for sub struct ...")
 
 	subject, predicate := u.Str(tuple.Predicate).RemovePrefix("sif."), "::"
-	qStr := spf("SELECT object, version FROM %s WHERE subject = '%s' AND predicate = '%s' ORDER BY time DESC LIMIT 1", contextName, subject, predicate)
+	qStr := spf("SELECT object, version FROM \"%s\" WHERE subject = '%s' AND predicate = '%s' ORDER BY time DESC LIMIT 1", contextName, subject, predicate)
 	resp, err := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
 	PE(err)
 	PE(resp.Error())
