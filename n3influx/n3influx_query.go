@@ -2,77 +2,124 @@ package n3influx
 
 import (
 	"encoding/json"
-	"fmt"
 	"strconv"
 	"strings"
 
-	u "github.com/cdutwhu/util"
+	u "github.com/cdutwhu/go-util"
 	influx "github.com/influxdata/influxdb/client/v2"
 	"github.com/nsip/n3-messages/messages/pb"
 )
 
-var (
-	pf, spf, pln = fmt.Printf, fmt.Sprintf, fmt.Println
-)
-
 // SubExist :
-func (n3ic *Publisher) SubExist(tuple *pb.SPOTuple, contextName, db string) bool {
+func (n3ic *Publisher) SubExist(tuple *pb.SPOTuple, ctxName, db string) bool {
 	// pln("checking subject ...")
-	qStr := spf("SELECT object, version FROM \"%s\" WHERE subject = '%s' ORDER BY time DESC LIMIT 1", contextName, tuple.Subject)
-	resp, err := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
-	PE(err)
-	PE(resp.Error())
+	qStr := fSpf(`SELECT object, version FROM "%s" WHERE subject = '%s' ORDER BY time DESC LIMIT 1`, ctxName, tuple.Subject)
+	resp, e := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
+	uPE(e)
+	uPE(resp.Error())
 	return len(resp.Results[0].Series) != 0
 }
 
-// GetObj :
-func (n3ic *Publisher) GetObj(tuple *pb.SPOTuple, offset int, isArray bool, contextName, db string) (string, int64, bool) {
+// GetObjs (for XAPI query) : (return objects, versions, IsFound)
+func (n3ic *Publisher) GetObjs(tuple *pb.SPOTuple, ctxName, db string) (preds, objs []string, vers []int64, found bool) {
+
+	subject, predicate := tuple.Subject, tuple.Predicate
+	qStr := fSpf(`SELECT predicate, object, version FROM "%s" WHERE subject = '%s' AND predicate =~ /^%s\./ ORDER BY time DESC`, ctxName, subject, predicate)
+	resp, e := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
+	uPE(e)
+	uPE(resp.Error())
+
+	if len(resp.Results[0].Series) > 0 && len(resp.Results[0].Series[0].Values) > 0 {
+		for _, l := range resp.Results[0].Series[0].Values {
+			pred, obj := l[1].(string), l[2].(string)
+			preds, objs = append(preds, pred), append(objs, obj)
+			v, e := l[3].(json.Number).Int64()
+			uPE(e)
+			ver := v
+			vers = append(vers, ver)
+			fPln(pred, obj, ver)
+		}
+		found = true
+		fPln()
+		return
+	}
+	return
+}
+
+// GetObj : (return object, version, IsFound)
+func (n3ic *Publisher) GetObj(tuple *pb.SPOTuple, offset int, isArray bool, ctxName, db string) (obj string, ver int64, found bool) {
+	ver = -1
+
 	// pln("looking for object ...")
 	// if !isArray {
 	subject, predicate := tuple.Subject, tuple.Predicate
-	qStr := spf("SELECT object, version FROM \"%s\" WHERE subject = '%s' AND predicate = '%s' ORDER BY time DESC LIMIT 1 OFFSET %d", contextName, subject, predicate, offset)
-	resp, err := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
-	PE(err)
-	PE(resp.Error())
+	qStr := fSpf(`SELECT object, version FROM "%s" WHERE subject = '%s' AND predicate = '%s' ORDER BY time DESC LIMIT 1 OFFSET %d`, ctxName, subject, predicate, offset)
+	resp, e := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
+	uPE(e)
+	uPE(resp.Error())
 	if len(resp.Results[0].Series) > 0 && len(resp.Results[0].Series[0].Values) > 0 {
 		// pln(resp.Results[0].Series[0].Values)
 		// pln(resp.Results[0].Series[0].Values[0])
 		// pln(resp.Results[0].Series[0].Values[0][1]) /* [0] is time, [1] is object, as select ... */
-		ver, err := resp.Results[0].Series[0].Values[0][2].(json.Number).Int64()
-		PE(err)
-		return resp.Results[0].Series[0].Values[0][1].(string), ver, true
+		obj = resp.Results[0].Series[0].Values[0][1].(string)
+		v, e := resp.Results[0].Series[0].Values[0][2].(json.Number).Int64()
+		uPE(e)
+		ver = v
+		found = true
+		return
 	}
 	// } else {
 	// 	pf(" ******************************************* %s No. %d \n", tuple.Predicate, offset)
 	// }
-	return "", -1, false
+	return
 }
 
 // GetSubStruct :
-func (n3ic *Publisher) GetSubStruct(tuple *pb.SPOTuple, contextName, db string) (string, bool) {
+func (n3ic *Publisher) GetSubStruct(tuple *pb.SPOTuple, ctxName, db string) (string, bool) {
 	// pln("looking for sub struct ...")
 
 	subject, predicate := u.Str(tuple.Predicate).RemovePrefix("sif."), "::"
-	qStr := spf("SELECT object, version FROM \"%s\" WHERE subject = '%s' AND predicate = '%s' ORDER BY time DESC LIMIT 1", contextName, subject, predicate)
+	qStr := fSpf("SELECT object, version FROM \"%s\" WHERE subject = '%s' AND predicate = '%s' ORDER BY time DESC LIMIT 1", ctxName, subject, predicate)
 	resp, err := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
-	PE(err)
-	PE(resp.Error())
+	uPE(err)
+	uPE(resp.Error())
 	if len(resp.Results[0].Series) > 0 && len(resp.Results[0].Series[0].Values) > 0 {
 		return resp.Results[0].Series[0].Values[0][1].(string), true
 	}
 	return "", false
 }
 
-// QueryTuple :
-func (n3ic *Publisher) QueryTuple(tuple *pb.SPOTuple, offset int, isArray bool, contextName string, ts *[]*pb.SPOTuple, arrInfo *map[string]int) {
+// QueryTuples (for XAPI query) :
+func (n3ic *Publisher) QueryTuples(tuple *pb.SPOTuple, ctxName string, ts *[]*pb.SPOTuple) {
 	db := "tuples"
 
-	if !n3ic.SubExist(tuple, contextName, db) {
-		pln("subject does not exist !")
+	if !n3ic.SubExist(tuple, ctxName, db) {
+		fPln("subject does not exist !")
 		return
 	}
 
-	if obj, ver, ok := n3ic.GetObj(tuple, offset, isArray, contextName, db); ok {
+	if preds, objs, vers, ok := n3ic.GetObjs(tuple, ctxName, db); ok {
+		for i := range preds {
+			*ts = append(*ts, &pb.SPOTuple{
+				Subject:   tuple.Subject,
+				Predicate: preds[i],
+				Object:    objs[i],
+				Version:   vers[i],
+			})
+		}
+	}
+}
+
+// QueryTuple :
+func (n3ic *Publisher) QueryTuple(tuple *pb.SPOTuple, offset int, isArray bool, ctxName string, ts *[]*pb.SPOTuple, arrInfo *map[string]int) {
+	db := "tuples"
+
+	if !n3ic.SubExist(tuple, ctxName, db) {
+		fPln("subject does not exist !")
+		return
+	}
+
+	if obj, ver, ok := n3ic.GetObj(tuple, offset, isArray, ctxName, db); ok {
 		// pf("got object .................. %d \n", ver)
 		tuple.Object = obj
 		*ts = append(*ts, &pb.SPOTuple{
@@ -84,21 +131,21 @@ func (n3ic *Publisher) QueryTuple(tuple *pb.SPOTuple, offset int, isArray bool, 
 		return
 	}
 
-	if stru, ok := n3ic.GetSubStruct(tuple, contextName, db); ok {
+	if stru, ok := n3ic.GetSubStruct(tuple, ctxName, db); ok {
 		// pln(spf("got sub-struct, more work to do ......"))
 
 		/* Array Element */
-		if i, j := strings.Index(stru, "["), strings.Index(stru, "]"); i == 0 && j > 1 {
+		if i, j := sI(stru, "["), sI(stru, "]"); i == 0 && j > 1 {
 			nArr, _ := strconv.Atoi(stru[1:j])
 			// pln(nArr)
 			s := stru[j+1:]
-			tuple.Predicate += spf(".%s", s)
+			tuple.Predicate += fSpf(".%s", s)
 			// pln(tuple.Predicate)
 
 			(*arrInfo)[tuple.Predicate] = nArr /* keep the array */
 
 			for k := 0; k < nArr; k++ {
-				n3ic.QueryTuple(tuple, nArr-k-1, true, contextName, ts, arrInfo)
+				n3ic.QueryTuple(tuple, nArr-k-1, true, ctxName, ts, arrInfo)
 			}
 			tuple.Predicate = u.Str(tuple.Predicate).RemoveTailFromLast(".")
 			return
@@ -107,9 +154,9 @@ func (n3ic *Publisher) QueryTuple(tuple *pb.SPOTuple, offset int, isArray bool, 
 		/* None Array Element */
 		subs := strings.Split(stru, " + ")
 		for _, s := range subs {
-			tuple.Predicate += spf(".%s", s)
+			tuple.Predicate += fSpf(".%s", s)
 			// pln(tuple.Predicate)
-			n3ic.QueryTuple(tuple, offset, false, contextName, ts, arrInfo)
+			n3ic.QueryTuple(tuple, offset, false, ctxName, ts, arrInfo)
 			tuple.Predicate = u.Str(tuple.Predicate).RemoveTailFromLast(".")
 		}
 		return
@@ -173,7 +220,7 @@ func (n3ic *Publisher) AdjustOptionalTuples(ts *[]*pb.SPOTuple, arrInfo *map[str
 	for ituple, tuple := range *ts {
 		pre, ver := tuple.Predicate, tuple.Version
 		if ok, nArr := u.Str(pre).CoverAnyKeyInMapSI(*arrInfo); ok {
-			pf("%d : %s : %d # %d\n", ituple, pre, nArr, ver)
+			fPf("%d : %s : %d # %d\n", ituple, pre, nArr, ver)
 			if _, ok := mapTuplesInArr[pre]; !ok {
 				mapTuplesInArr[pre] = &arrOptTupleInfo{}
 			}
@@ -195,13 +242,13 @@ func (n3ic *Publisher) AdjustOptionalTuples(ts *[]*pb.SPOTuple, arrInfo *map[str
 	for _, v := range mapOptTuple {
 		for i, tIdx := range v.indices {
 			this, above := (*ts)[tIdx], (*ts)[tIdx-1]
-			pf("%d --- %v\n", tIdx, this)
+			fPf("%d --- %v\n", tIdx, this)
 			if vers, indicesTS := getVersByPre(ts, above.Predicate); len(vers) > 0 {
 				tVer := v.versions[i]
 				_, idx := u.I64(tVer).Nearest(vers...)
 				posShouldBeAfter := indicesTS[idx]
 				shouldBeAfter := (*ts)[posShouldBeAfter]
-				pf("Should be after : %d --- %v\n", posShouldBeAfter, shouldBeAfter)
+				fPf("Should be after : %d --- %v\n", posShouldBeAfter, shouldBeAfter)
 				optTuples, aboveTuples = append(optTuples, this), append(aboveTuples, shouldBeAfter)
 			}
 		}

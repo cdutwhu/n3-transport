@@ -1,17 +1,21 @@
 package n3node
 
-import u "github.com/cdutwhu/util"
+import (
+	"fmt"
+	"strings"
+
+	u "github.com/cdutwhu/go-util"
+)
 
 var (
-	// PE is
-	PE = u.PanicOnError
+	uPE  = u.PanicOnError
+	uPE1 = u.PanicOnError1
+	uPH  = u.PanicHandle
+	uPC  = u.PanicOnCondition
 
-	// PE1 is
-	PE1 = u.PanicOnError1
+	fPln = fmt.Println
+	fPf  = fmt.Printf
 
-	// PH is
-	PH = u.PanicHandle
-
-	// PC is
-	PC = u.PanicOnCondition
+	sHP = strings.HasPrefix
+	sHS = strings.HasSuffix
 )

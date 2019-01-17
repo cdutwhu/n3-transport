@@ -261,22 +261,41 @@ func (n3c *N3Node) startWriteHandler() error {
 			log.Println("write handler unable to publish message: ", err)
 			return
 		}
-
 	}
 
-	qHandler := func(n3msg *pb.N3Message) []*pb.SPOTuple {
-		pln, _ := fmt.Println, fmt.Printf
+	qHandler := func(n3msg *pb.N3Message) (ts []*pb.SPOTuple) {
 		tuple, e := messages.DecodeTuple(n3msg.Payload)
-		PE(e)
-		pln("in qHandler")
-		ts := []*pb.SPOTuple{}
-		arrInfo := make(map[string]int) /* key: predicate, value: array count */
-		query.QueryTuple(tuple, 0, false, n3msg.CtxName, &ts, &arrInfo)
-
-		/* we need re-order some tuples */
-		query.AdjustOptionalTuples(&ts, &arrInfo)
-		return ts
+		uPE(e)
+		fPln("in Query qHandler")
+		if sHS(n3msg.CtxName, "-sif") {
+			arrInfo := make(map[string]int) /* key: predicate, value: array count */
+			query.QueryTuple(tuple, 0, false, n3msg.CtxName, &ts, &arrInfo)
+			query.AdjustOptionalTuples(&ts, &arrInfo) /* we need re-order some tuples */
+		} else if sHS(n3msg.CtxName, "-xapi") {
+			query.QueryTuples(tuple, n3msg.CtxName, &ts)
+		}
+		return
 	}
+
+	// qHandler := func(n3msg *pb.N3Message) (ts []*pb.SPOTuple) {
+	// 	tuple, e := messages.DecodeTuple(n3msg.Payload)
+	// 	uPE(e)
+	// 	fPln("in qHandler")
+	// 	arrInfo := make(map[string]int) /* key: predicate, value: array count */
+	// 	query.QueryTuple(tuple, 0, false, n3msg.CtxName, &ts, &arrInfo)
+	// 	/* we need re-order some tuples */
+	// 	query.AdjustOptionalTuples(&ts, &arrInfo)
+	// 	return ts
+	// }
+
+	// qHandler := func(n3msg *pb.N3Message) (ts []*pb.SPOTuple) {
+	// 	tuple, e := messages.DecodeTuple(n3msg.Payload)
+	// 	uPE(e)
+	// 	fPln("in qHandler")
+	// 	// ts := []*pb.SPOTuple{}
+	// 	query.QueryTuples(tuple, n3msg.CtxName, &ts)
+	// 	return
+	// }
 
 	// start server
 	apiServer := n3grpc.NewAPIServer()

@@ -1,17 +1,21 @@
 package n3influx
 
-import u "github.com/cdutwhu/util"
+import (
+	"fmt"
+	"strings"
+
+	u "github.com/cdutwhu/go-util"
+)
 
 var (
-	// PE is
-	PE = u.PanicOnError
+	uPE  = u.PanicOnError
+	uPE1 = u.PanicOnError1
+	uPH  = u.PanicHandle
+	uPC  = u.PanicOnCondition
 
-	// PE1 is
-	PE1 = u.PanicOnError1
+	fPf  = fmt.Printf
+	fSpf = fmt.Sprintf
+	fPln = fmt.Println
 
-	// PH is
-	PH = u.PanicHandle
-
-	// PC is
-	PC = u.PanicOnCondition
+	sI = strings.Index
 )
