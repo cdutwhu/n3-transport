@@ -46,13 +46,38 @@ func (n3ic *Publisher) GetObjs(tuple *pb.SPOTuple, ctxName, db string) (preds, o
 	return
 }
 
+// QueryTuples (for XAPI query) :
+func (n3ic *Publisher) QueryTuples(tuple *pb.SPOTuple, ctxName string, ts *[]*pb.SPOTuple) {
+	db := "tuples"
+
+	if !n3ic.SubExist(tuple, ctxName, db) {
+		fPln("subject does not exist !")
+		return
+	}
+
+	if preds, objs, vers, ok := n3ic.GetObjs(tuple, ctxName, db); ok {
+		for i := range preds {
+			*ts = append(*ts, &pb.SPOTuple{
+				Subject:   tuple.Subject,
+				Predicate: preds[i],
+				Object:    objs[i],
+				Version:   vers[i],
+			})
+		}
+	}
+}
+
+/**********************************************************************************************/
+
 // GetObj : (return object, version, IsFound)
 func (n3ic *Publisher) GetObj(tuple *pb.SPOTuple, offset int, isArray bool, ctxName, db string) (obj string, ver int64, found bool) {
 	ver = -1
 
-	// pln("looking for object ...")
 	// if !isArray {
 	subject, predicate := tuple.Subject, tuple.Predicate
+
+	fPf("looking for object ... %s ... %s\n", subject, predicate)
+
 	qStr := fSpf(`SELECT object, version FROM "%s" WHERE subject = '%s' AND predicate = '%s' ORDER BY time DESC LIMIT 1 OFFSET %d`, ctxName, subject, predicate, offset)
 	resp, e := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
 	uPE(e)
@@ -79,9 +104,9 @@ func (n3ic *Publisher) GetSubStruct(tuple *pb.SPOTuple, ctxName, db string) (str
 	// pln("looking for sub struct ...")
 
 	subject, predicate := u.Str(tuple.Predicate).RemovePrefix("sif."), "::"
-	qStr := fSpf("SELECT object, version FROM \"%s\" WHERE subject = '%s' AND predicate = '%s' ORDER BY time DESC LIMIT 1", ctxName, subject, predicate)
-	resp, err := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
-	uPE(err)
+	qStr := fSpf(`SELECT object, version FROM "%s" WHERE subject = '%s' AND predicate = '%s' ORDER BY time DESC LIMIT 1`, ctxName, subject, predicate)
+	resp, e := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
+	uPE(e)
 	uPE(resp.Error())
 	if len(resp.Results[0].Series) > 0 && len(resp.Results[0].Series[0].Values) > 0 {
 		return resp.Results[0].Series[0].Values[0][1].(string), true
@@ -89,25 +114,21 @@ func (n3ic *Publisher) GetSubStruct(tuple *pb.SPOTuple, ctxName, db string) (str
 	return "", false
 }
 
-// QueryTuples (for XAPI query) :
-func (n3ic *Publisher) QueryTuples(tuple *pb.SPOTuple, ctxName string, ts *[]*pb.SPOTuple) {
-	db := "tuples"
+// GetArrInfo :
+func (n3ic *Publisher) GetArrInfo(tuple *pb.SPOTuple, ctxName, db string) (int, bool) {
+	// pln("looking for array info ...")
 
-	if !n3ic.SubExist(tuple, ctxName, db) {
-		fPln("subject does not exist !")
-		return
+	subject, predicate := u.Str(tuple.Predicate).RemovePrefix("sif."), tuple.Subject
+	qStr := fSpf(`SELECT object, version FROM "%s" WHERE subject = '%s' AND predicate = '%s' ORDER BY time DESC LIMIT 1`, ctxName, subject, predicate)
+	resp, e := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
+	uPE(e)
+	uPE(resp.Error())
+	if len(resp.Results[0].Series) > 0 && len(resp.Results[0].Series[0].Values) > 0 {
+		n, e := strconv.Atoi(resp.Results[0].Series[0].Values[0][1].(string))
+		uPE(e)
+		return n, true
 	}
-
-	if preds, objs, vers, ok := n3ic.GetObjs(tuple, ctxName, db); ok {
-		for i := range preds {
-			*ts = append(*ts, &pb.SPOTuple{
-				Subject:   tuple.Subject,
-				Predicate: preds[i],
-				Object:    objs[i],
-				Version:   vers[i],
-			})
-		}
-	}
+	return 0, false
 }
 
 // QueryTuple :
@@ -120,7 +141,7 @@ func (n3ic *Publisher) QueryTuple(tuple *pb.SPOTuple, offset int, isArray bool, 
 	}
 
 	if obj, ver, ok := n3ic.GetObj(tuple, offset, isArray, ctxName, db); ok {
-		// pf("got object .................. %d \n", ver)
+		fPf("got object .................. %d \n", ver)
 		tuple.Object = obj
 		*ts = append(*ts, &pb.SPOTuple{
 			Subject:   tuple.Subject, // + spf(" # %d", ver),
@@ -132,14 +153,14 @@ func (n3ic *Publisher) QueryTuple(tuple *pb.SPOTuple, offset int, isArray bool, 
 	}
 
 	if stru, ok := n3ic.GetSubStruct(tuple, ctxName, db); ok {
-		// pln(spf("got sub-struct, more work to do ......"))
+		fPf("got sub-struct, more work ------> %s\n", stru)
 
 		/* Array Element */
-		if i, j := sI(stru, "["), sI(stru, "]"); i == 0 && j > 1 {
-			nArr, _ := strconv.Atoi(stru[1:j])
+		if i := sI(stru, "[]"); i == 0 {
+			nArr, _ := n3ic.GetArrInfo(tuple, ctxName, db)
 			// pln(nArr)
-			s := stru[j+1:]
-			tuple.Predicate += fSpf(".%s", s)
+
+			tuple.Predicate += fSpf(".%s", stru[i+2:])
 			// pln(tuple.Predicate)
 
 			(*arrInfo)[tuple.Predicate] = nArr /* keep the array */
@@ -168,6 +189,13 @@ func (n3ic *Publisher) QueryTuple(tuple *pb.SPOTuple, offset int, isArray bool, 
 	}
 }
 
+type arrOptTupleInfo struct {
+	nArray   int     /* 'this' tuple's array's count */
+	nTuple   int     /* 'this' tuple count in real */
+	indices  []int   /* optional tuple's index in ts */
+	versions []int64 /* optional tuple's version */
+}
+
 func getVersByPre(ts *[]*pb.SPOTuple, pre string) (vers []int64, indices []int) {
 	for i, t := range *ts {
 		if t.Predicate == pre {
@@ -176,42 +204,6 @@ func getVersByPre(ts *[]*pb.SPOTuple, pre string) (vers []int64, indices []int) 
 		}
 	}
 	return
-}
-
-// func moveTupleAfterVer(ts *[]*pb.SPOTuple, tIn *pb.SPOTuple, ver int64) {
-// 	bFindVer, bDel := false, false
-// 	for _, t := range *ts {
-// 		if t.Version == ver {
-// 			bFindVer = true
-// 			break
-// 		}
-// 	}
-// 	if bFindVer {
-// 		for i, t := range *ts {
-// 			if t == tIn {
-// 				*ts = append((*ts)[:i], (*ts)[i+1:]...)
-// 				bDel = true
-// 				break
-// 			}
-// 		}
-// 		if bDel {
-// 			for i, t := range *ts {
-// 				if t.Version == ver {
-// 					*ts = append(*ts, nil)
-// 					copy((*ts)[i+2:], (*ts)[i+1:])
-// 					(*ts)[i+1] = tIn
-// 					break
-// 				}
-// 			}
-// 		}
-// 	}
-// }
-
-type arrOptTupleInfo struct {
-	nArray   int     /* 'this' tuple's array's count */
-	nTuple   int     /* 'this' tuple count in real */
-	indices  []int   /* optional tuple's index in ts */
-	versions []int64 /* optional tuple's version */
 }
 
 // AdjustOptionalTuples : according to tuple version, adjust some tuples' order in sub array tuple

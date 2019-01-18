@@ -1,3 +1,3 @@
-ts=2019-01-16T23:11:14.207907Z lvl=info msg="InfluxDB starting" log_id=0D2Elw7l000 version=1.7.2 branch=1.7 commit=76f907b0fada2f16931e37471da695349fcdf8c6
-ts=2019-01-16T23:11:14.208024Z lvl=info msg="Go runtime" log_id=0D2Elw7l000 version=go1.11 maxprocs=4
+ts=2019-01-18T03:53:00.310694Z lvl=info msg="InfluxDB starting" log_id=0D3mIEaW000 version=1.7.2 branch=1.7 commit=76f907b0fada2f16931e37471da695349fcdf8c6
+ts=2019-01-18T03:53:00.310808Z lvl=info msg="Go runtime" log_id=0D3mIEaW000 version=go1.11 maxprocs=4
 run: open server: listen: listen tcp 127.0.0.1:8088: bind: address already in use
