@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"../n3config"
 	"../n3crypto"
@@ -198,8 +199,8 @@ func (n3c *N3Node) startApprovalHandler() error {
 //
 func (n3c *N3Node) startWriteHandler() error {
 
-	// test-1
-	query, _ := n3influx.NewPublisher()
+	// get an instance of direct db query
+	dbClient, _ := n3influx.NewPublisher()
 
 	// join network, acquire dispatcher
 	dispatcherid, err := n3nats.Join(n3c.natsConn, n3c.pubKey)
@@ -230,6 +231,7 @@ func (n3c *N3Node) startWriteHandler() error {
 		// TODO: check privacy rules
 
 		// TODO: assign lamport clock version
+		assignVer(dbClient, tuple, n3msg.CtxName)
 
 		// specify dispatcher
 		// n3msg.DispId = dispatcherid
@@ -263,39 +265,53 @@ func (n3c *N3Node) startWriteHandler() error {
 		}
 	}
 
+	// *** set up handler for query by inbound messages ***
 	qHandler := func(n3msg *pb.N3Message) (ts []*pb.SPOTuple) {
+		fPln("in Query qHandler")
 		tuple, e := messages.DecodeTuple(n3msg.Payload)
 		uPE(e)
-		fPln("in Query qHandler")
+		tempCtx := fSpf("temp_%d", time.Now().UnixNano())
+
 		if sHS(n3msg.CtxName, "-sif") {
+
+			n := dbClient.BatTransEx(tuple, n3msg.CtxName, tempCtx, false, true, func(s, p, o string, v int64) bool {
+				return false
+			})
+			fPln("v", n)
+
+			tupleS := &pb.SPOTuple{Subject: tuple.Predicate, Predicate: "::"}
+			n = dbClient.BatTransEx(tupleS, n3msg.CtxName, tempCtx, true, false, func(s, p, o string, v int64) bool {
+				if vValid := dbClient.GetVer(&pb.SPOTuple{Subject: s, Predicate: p}, n3msg.CtxName); vValid != v {
+					fPln(vValid, v)
+					return true
+				}
+				return false
+			})
+			fPln("s", n)
+
+			tupleA := &pb.SPOTuple{Subject: tuple.Predicate, Predicate: tuple.Subject}
+			n = dbClient.BatTransEx(tupleA, n3msg.CtxName, tempCtx, true, false, func(s, p, o string, v int64) bool {
+				return false
+			})
+			fPln("a", n)
+
+			time.Sleep(2000 * time.Millisecond)
+
+			/******************************************/
+			// ctx, revArr := n3msg.CtxName, true /* DEBUG : directly look up from original table */
+			ctx, revArr := tempCtx, false
 			arrInfo := make(map[string]int) /* key: predicate, value: array count */
-			query.QueryTuple(tuple, 0, false, n3msg.CtxName, &ts, &arrInfo)
-			query.AdjustOptionalTuples(&ts, &arrInfo) /* we need re-order some tuples */
+			dbClient.QueryTuple(tuple, 0, false, revArr, ctx, &ts, &arrInfo)
+			dbClient.AdjustOptionalTuples(&ts, &arrInfo) /* we need re-order some tuples */
+
+			/******************************************/
+			// dbClient.DropCtx(tempCtx)
+
 		} else if sHS(n3msg.CtxName, "-xapi") {
-			query.QueryTuples(tuple, n3msg.CtxName, &ts)
+			dbClient.QueryTuples(tuple, n3msg.CtxName, &ts)
 		}
 		return
 	}
-
-	// qHandler := func(n3msg *pb.N3Message) (ts []*pb.SPOTuple) {
-	// 	tuple, e := messages.DecodeTuple(n3msg.Payload)
-	// 	uPE(e)
-	// 	fPln("in qHandler")
-	// 	arrInfo := make(map[string]int) /* key: predicate, value: array count */
-	// 	query.QueryTuple(tuple, 0, false, n3msg.CtxName, &ts, &arrInfo)
-	// 	/* we need re-order some tuples */
-	// 	query.AdjustOptionalTuples(&ts, &arrInfo)
-	// 	return ts
-	// }
-
-	// qHandler := func(n3msg *pb.N3Message) (ts []*pb.SPOTuple) {
-	// 	tuple, e := messages.DecodeTuple(n3msg.Payload)
-	// 	uPE(e)
-	// 	fPln("in qHandler")
-	// 	// ts := []*pb.SPOTuple{}
-	// 	query.QueryTuples(tuple, n3msg.CtxName, &ts)
-	// 	return
-	// }
 
 	// start server
 	apiServer := n3grpc.NewAPIServer()

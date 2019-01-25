@@ -1,0 +1,28 @@
+
+*** Panic Error *** Fatal : true ***
+2019/01/22 15:26:21 *errors.errorString error parsing query: found abc-sif, expected FROM at line 1, char 48
+/home/qmiao/Desktop/n3-transport/n3influx/n3influx_query.go:45 (0x8b21ed)
+	(*Publisher).GetObjs: uPE(e, resp.Error())
+/home/qmiao/Desktop/n3-transport/n3influx/n3influx_query_test.go:16 (0x8b63b6)
+	TestGetObjs: if ss, ps, os, vs, ok := dbClient.GetObjs(tuple, "abc-sif", "tuples", true, false); ok {
+/usr/local/go/src/testing/testing.go:827 (0x4f764f)
+	tRunner: fn(t)
+/usr/local/go/src/runtime/asm_amd64.s:1333 (0x45cec1)
+	goexit: BYTE	$0x90	// NOP
+
+*** Panic Error *** Fatal : true ***
+2019/01/25 12:57:23 *errors.errorString error parsing query: found FROM, expected identifier, string, number, bool at line 1, char 45
+/home/qmiao/Desktop/n3-transport/n3influx/n3influx_query.go:61 (0x8b5c27)
+	(*DBClient).GetObjs: uPE(e, resp.Error())
+/home/qmiao/Desktop/n3-transport/n3influx/n3influx_query_test.go:17 (0x8ba2a3)
+	TestGetObjs: if ss, ps, os, vs, ok := dbClient.GetObjs(tuple, "abc-sif", true, false); ok {
+/usr/local/go/src/testing/testing.go:827 (0x4f764f)
+	tRunner: fn(t)
+/usr/local/go/src/runtime/asm_amd64.s:1333 (0x45cec1)
+	goexit: BYTE	$0x90	// NOP
+
+*** Panic Error *** Fatal : true ***
+2019/01/25 13:23:43 interface conversion: interface {} is string, not int
+
+*** Panic Error *** Fatal : true ***
+2019/01/25 13:25:33 interface conversion: interface {} is json.Number, not int

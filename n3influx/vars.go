@@ -19,3 +19,9 @@ var (
 
 	sI = strings.Index
 )
+
+const (
+	db         = "tuples"
+	orderByVer = "version" /* NOT supported */
+	orderByTm  = "time"    /* only ORDER BY time supported at this time */
+)

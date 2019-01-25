@@ -15,6 +15,7 @@ var (
 
 	fPln = fmt.Println
 	fPf  = fmt.Printf
+	fSpf = fmt.Sprintf
 
 	sHP = strings.HasPrefix
 	sHS = strings.HasSuffix
