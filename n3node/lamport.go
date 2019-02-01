@@ -6,32 +6,56 @@ import (
 	"github.com/nsip/n3-messages/messages/pb"
 )
 
-func assignVer(dbClient *n3influx.DBClient, tuple *pb.SPOTuple, ctx string) {
-	_, pred, obj, ver := tuple.Subject, tuple.Predicate, tuple.Object, tuple.Version
+func getValueVerRange(dbClient *n3influx.DBClient, objID string, ctx string) (start, end, ver int64) {
+	tuple := &pb.SPOTuple{Subject: objID, Predicate: "V"}
+	o, v := dbClient.GetObjVer(tuple, u.Str(ctx).MkSuffix("-meta"))
+	if v != -1 {
+		ss := sSpl(o, "-")
+		start, end, ver = u.Str(ss[0]).ToInt64(), u.Str(ss[1]).ToInt64(), v
+	}
+	return
+}
 
-	// *** check struct tuples ***
-	if pred == "::" {
-		if objDB, verDB, found := dbClient.GetObj(tuple, 0, false, ctx); found && ver >= verDB {
-			if u.Str(objDB).FieldsSeqContain(obj, " + ") {
-				// fPln("Version assign 1...")
+func assignVer(dbClient *n3influx.DBClient, tuple *pb.SPOTuple, ctx string) bool {
+	s, p, o, v := tuple.Subject, tuple.Predicate, tuple.Object, tuple.Version
+
+	// *** for value tuple ***
+	if u.Str(s).IsUUID() {
+
+		// *** New ID (NOT Terminator) is coming ***
+		if s != prevID && p != TERMMARK {
+			mapIDVQ[s] = append(mapIDVQ[s], v)
+			l := len(mapIDVQ[s])
+			fPln(l, mapIDVQ[s])
+			startVer = mapIDVQ[s][l-1]
+		}
+
+		// *** Terminator is coming, save ***
+		if p == TERMMARK {
+			// *** Save prevID's low-high version map into meta db as <"id" - "" - "low-high"> ***
+			dbClient.StoreTuple(
+				&pb.SPOTuple{
+					Subject:   prevID,
+					Predicate: "V",
+					Object:    fSf("%d-%d", startVer, prevVer),
+					Version:   verMeta,
+				},
+				ctx+"-meta") // *** Meta Context ***
+			verMeta++
+		}
+
+		prevID, prevPred, prevVer = s, p, v
+	}
+
+	// *** check struct tuple ***
+	if p == "::" {
+		if objDB, verDB := dbClient.GetObjVer(tuple, ctx); verDB > 0 {
+			if u.Str(objDB).FieldsSeqContain(o, " + ") {
 				tuple.Version = 0
-				return
+				return false
 			}
 		}
 	}
 
-	if objDB, _, found := dbClient.GetObj(tuple, 0, false, ctx); found && objDB == obj {
-		tuple.Version = 0
-		return
-	}
-
-	// // *** check array info tuples ***
-	// if u.Str(pred).IsUUID() {
-	// 	if objDB, verDB, found := dbClient.GetObj(tuple, 0, false, ctx); found && ver >= verDB {
-	// 		if objDB == obj {
-	// 			// fPln("Version assign 2...")
-	// 			tuple.Version = 0
-	// 		}
-	// 	}
-	// }
+	return true
 }

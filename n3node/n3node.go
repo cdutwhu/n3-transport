@@ -14,6 +14,7 @@ import (
 	"../n3influx"
 	"../n3liftbridge"
 	"../n3nats"
+	"github.com/google/uuid"
 	liftbridge "github.com/liftbridge-io/go-liftbridge"
 	lbproto "github.com/liftbridge-io/go-liftbridge/liftbridge-grpc"
 	nats "github.com/nats-io/go-nats"
@@ -22,6 +23,8 @@ import (
 	"github.com/nsip/n3-messages/n3grpc"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
+
+	u "github.com/cdutwhu/go-util"
 )
 
 //
@@ -231,7 +234,9 @@ func (n3c *N3Node) startWriteHandler() error {
 		// TODO: check privacy rules
 
 		// TODO: assign lamport clock version
-		assignVer(dbClient, tuple, n3msg.CtxName)
+		if !assignVer(dbClient, tuple, n3msg.CtxName) {
+			return
+		}
 
 		// specify dispatcher
 		// n3msg.DispId = dispatcherid
@@ -268,47 +273,50 @@ func (n3c *N3Node) startWriteHandler() error {
 	// *** set up handler for query by inbound messages ***
 	qHandler := func(n3msg *pb.N3Message) (ts []*pb.SPOTuple) {
 		fPln("in Query qHandler")
-		tuple, e := messages.DecodeTuple(n3msg.Payload)
-		uPE(e)
-		tempCtx := fSpf("temp_%d", time.Now().UnixNano())
+		tuple := Must(messages.DecodeTuple(n3msg.Payload)).(*pb.SPOTuple)
+		s := tuple.Subject
+		start, end, _ := getValueVerRange(dbClient, s, n3msg.CtxName)
 
 		if sHS(n3msg.CtxName, "-sif") {
 
-			n := dbClient.BatTransEx(tuple, n3msg.CtxName, tempCtx, false, true, func(s, p, o string, v int64) bool {
-				return false
-			})
+			tempCtx := fSf("temp_%d", time.Now().UnixNano())
+			// n := dbClient.BatTransEx(tuple, n3msg.CtxName, tempCtx, false, true, start, end, func(s, p, o string, v int64) bool { return false })
+			n := dbClient.BatTrans(tuple, n3msg.CtxName, tempCtx, false, true, start, end)
 			fPln("v", n)
 
 			tupleS := &pb.SPOTuple{Subject: tuple.Predicate, Predicate: "::"}
-			n = dbClient.BatTransEx(tupleS, n3msg.CtxName, tempCtx, true, false, func(s, p, o string, v int64) bool {
-				if vValid := dbClient.GetVer(&pb.SPOTuple{Subject: s, Predicate: p}, n3msg.CtxName); vValid != v {
-					fPln(vValid, v)
-					return true
-				}
-				return false
-			})
+			// n = dbClient.BatTransEx(tupleS, n3msg.CtxName, tempCtx, true, false, 0, 0, func(s, p, o string, v int64) bool {
+			// 	if vValid := dbClient.GetVer(&pb.SPOTuple{Subject: s, Predicate: p}, n3msg.CtxName); vValid != v {
+			// 		fPln(vValid, v)
+			// 		return true
+			// 	}
+			// 	return false
+			// })
+			n = dbClient.BatTrans(tupleS, n3msg.CtxName, tempCtx, true, false, 0, 0)
 			fPln("s", n)
 
 			tupleA := &pb.SPOTuple{Subject: tuple.Predicate, Predicate: tuple.Subject}
-			n = dbClient.BatTransEx(tupleA, n3msg.CtxName, tempCtx, true, false, func(s, p, o string, v int64) bool {
-				return false
-			})
+			//n = dbClient.BatTransEx(tupleA, n3msg.CtxName, tempCtx, true, false, 0, 0, func(s, p, o string, v int64) bool { return false })
+			n = dbClient.BatTrans(tupleA, n3msg.CtxName, tempCtx, true, false, 0, 0)
 			fPln("a", n)
 
-			time.Sleep(2000 * time.Millisecond)
-
 			/******************************************/
-			// ctx, revArr := n3msg.CtxName, true /* DEBUG : directly look up from original table */
-			ctx, revArr := tempCtx, false
 			arrInfo := make(map[string]int) /* key: predicate, value: array count */
-			dbClient.QueryTuple(tuple, 0, false, revArr, ctx, &ts, &arrInfo)
-			dbClient.AdjustOptionalTuples(&ts, &arrInfo) /* we need re-order some tuples */
+			// ctx, revArr := n3msg.CtxName, true /* Search from original measurement, reverse array order */
+			// dbClient.QueryTuple(tuple, 0, revArr, ctx, &ts, &arrInfo, start, end) /* Search from original measurement */
+			ctx, revArr := tempCtx, true                                    /* Search from temp measurement, reverse array order */
+			dbClient.QueryTuple(tuple, 0, revArr, ctx, &ts, &arrInfo, 0, 0) /* Search from temp measurement */
+			dbClient.AdjustOptionalTuples(&ts, &arrInfo)                    /* we need re-order some tuples */
 
 			/******************************************/
-			// dbClient.DropCtx(tempCtx)
+			dbClient.DropCtx(tempCtx)
 
 		} else if sHS(n3msg.CtxName, "-xapi") {
-			dbClient.QueryTuples(tuple, n3msg.CtxName, &ts)
+			dbClient.QueryTuples(tuple, n3msg.CtxName, &ts, start, end)
+		} else if sHS(n3msg.CtxName, "-meta") {
+			_, ve, v := getValueVerRange(dbClient, tuple.Subject, n3msg.CtxName)
+			termID := uuid.New().String()
+			ts = append(ts, &pb.SPOTuple{Subject: s, Predicate: termID, Object: u.I64(ve).ToStr(), Version: v})
 		}
 		return
 	}
@@ -317,7 +325,6 @@ func (n3c *N3Node) startWriteHandler() error {
 	apiServer := n3grpc.NewAPIServer()
 	apiServer.SetMessageHandler(handler, qHandler)
 	return apiServer.Start(viper.GetInt("rpc_port"))
-
 }
 
 //

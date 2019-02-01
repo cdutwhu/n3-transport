@@ -8,13 +8,14 @@ import (
 )
 
 var (
-	uPE  = u.PanicOnError
-	uPE1 = u.PanicOnError1
-	uPH  = u.PanicHandle
-	uPC  = u.PanicOnCondition
+	PE   = u.PanicOnError
+	PE1  = u.PanicOnError1
+	PH   = u.PanicHandle
+	PC   = u.PanicOnCondition
+	Must = u.Must
 
 	fPf  = fmt.Printf
-	fSpf = fmt.Sprintf
+	fSf  = fmt.Sprintf
 	fPln = fmt.Println
 
 	sI = strings.Index
