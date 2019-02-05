@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	u "github.com/cdutwhu/go-util"
-	influx "github.com/influxdata/influxdb/client/v2"
+	influx "github.com/influxdata/influxdb1-client/v2"
 	"github.com/nsip/n3-messages/messages/pb"
 )
 

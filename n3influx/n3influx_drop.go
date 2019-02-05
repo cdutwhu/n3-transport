@@ -1,7 +1,7 @@
 package n3influx
 
 import (
-	influx "github.com/influxdata/influxdb/client/v2"
+	influx "github.com/influxdata/influxdb1-client/v2"
 )
 
 // DropCtx :

@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	influx "github.com/influxdata/influxdb/client/v2"
+	influx "github.com/influxdata/influxdb1-client/v2"
 	"github.com/nsip/n3-messages/messages/pb"
 	"github.com/spf13/viper"
 )

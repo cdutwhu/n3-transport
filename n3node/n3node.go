@@ -280,23 +280,14 @@ func (n3c *N3Node) startWriteHandler() error {
 		if sHS(n3msg.CtxName, "-sif") {
 
 			tempCtx := fSf("temp_%d", time.Now().UnixNano())
-			// n := dbClient.BatTransEx(tuple, n3msg.CtxName, tempCtx, false, true, start, end, func(s, p, o string, v int64) bool { return false })
 			n := dbClient.BatTrans(tuple, n3msg.CtxName, tempCtx, false, true, start, end)
 			fPln("v", n)
 
 			tupleS := &pb.SPOTuple{Subject: tuple.Predicate, Predicate: "::"}
-			// n = dbClient.BatTransEx(tupleS, n3msg.CtxName, tempCtx, true, false, 0, 0, func(s, p, o string, v int64) bool {
-			// 	if vValid := dbClient.GetVer(&pb.SPOTuple{Subject: s, Predicate: p}, n3msg.CtxName); vValid != v {
-			// 		fPln(vValid, v)
-			// 		return true
-			// 	}
-			// 	return false
-			// })
 			n = dbClient.BatTrans(tupleS, n3msg.CtxName, tempCtx, true, false, 0, 0)
 			fPln("s", n)
 
 			tupleA := &pb.SPOTuple{Subject: tuple.Predicate, Predicate: tuple.Subject}
-			//n = dbClient.BatTransEx(tupleA, n3msg.CtxName, tempCtx, true, false, 0, 0, func(s, p, o string, v int64) bool { return false })
 			n = dbClient.BatTrans(tupleA, n3msg.CtxName, tempCtx, true, false, 0, 0)
 			fPln("a", n)
 
@@ -313,10 +304,24 @@ func (n3c *N3Node) startWriteHandler() error {
 
 		} else if sHS(n3msg.CtxName, "-xapi") {
 			dbClient.QueryTuples(tuple, n3msg.CtxName, &ts, start, end)
-		} else if sHS(n3msg.CtxName, "-meta") {
+		} else if sHS(n3msg.CtxName, "-meta") { // *** request a ticket for publishing
+
+		AGAIN:
+			if _, ok := mapTickets.Load(s); ok {
+				time.Sleep(time.Millisecond * DELAY_CONTEST)
+				goto AGAIN
+			}
+
 			_, ve, v := getValueVerRange(dbClient, tuple.Subject, n3msg.CtxName)
-			termID := uuid.New().String()
-			ts = append(ts, &pb.SPOTuple{Subject: s, Predicate: termID, Object: u.I64(ve).ToStr(), Version: v})
+			termID, endV := uuid.New().String(), u.I64(ve).ToStr()
+			ts = append(ts, &pb.SPOTuple{Subject: s, Predicate: termID, Object: endV, Version: v}) // *** return result ***
+
+			mapTickets.Store(s, &ticket{tktID: termID, idx: endV})
+
+			if flagRmTicket {
+				go ticketRmAsync(dbClient, &mapTickets, n3msg.CtxName)
+				flagRmTicket = false
+			}
 		}
 		return
 	}
@@ -383,6 +388,11 @@ func (n3c *N3Node) startReadHandler() error {
 		tuple, err := n3crypto.DecryptTuple(n3msg.Payload, n3msg.DispId, n3c.privKey)
 		if err != nil {
 			log.Println("read handler decrypt error: ", err)
+			return
+		}
+
+		// *** exclude "legend liftbridge data" ***
+		if inDB(pub, tuple, n3msg.CtxName) {
 			return
 		}
 
