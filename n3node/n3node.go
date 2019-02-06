@@ -233,40 +233,49 @@ func (n3c *N3Node) startWriteHandler() error {
 
 		// TODO: check privacy rules
 
-		// TODO: assign lamport clock version
-		if !assignVer(dbClient, tuple, n3msg.CtxName) {
+		// TODO: *** assign lamport clock version ***
+		tupleQueue, ctxQueue, tn := []*pb.SPOTuple{tuple}, []string{n3msg.CtxName}, 1
+		if goon, tp, ctx := assignVer(dbClient, tuple, n3msg.CtxName); !goon {
 			return
+		} else if tp != nil { // *** add meta data tuple ***
+			// *** Save prevID's low-high version map into meta db as <"id" - "V" - "low-high"> ***
+			tupleQueue, ctxQueue, tn = append(tupleQueue, tp), append(ctxQueue, ctx), tn+1
+			fPln(tp, ctx, tn)
 		}
 
-		// specify dispatcher
-		// n3msg.DispId = dispatcherid
+		for i := 0; i < tn; i++ {
 
-		// encrypt tuple payload for dispatcher
-		encryptedTuple, err := n3crypto.EncryptTuple(tuple, dispatcherid, n3c.privKey)
-		if err != nil {
-			log.Println("write handler unable to encrypt tuple: ", err)
-			return
-		}
+			// specify dispatcher
+			// n3msg.DispId = dispatcherid
 
-		newMsg := &pb.N3Message{
-			Payload:   encryptedTuple,
-			SndId:     n3c.pubKey,
-			NameSpace: n3msg.NameSpace,
-			CtxName:   n3msg.CtxName,
-			DispId:    dispatcherid,
-		}
+			// encrypt tuple payload for dispatcher
+			encryptedTuple, err := n3crypto.EncryptTuple(tupleQueue[i], dispatcherid, n3c.privKey)
+			if err != nil {
+				log.Println("write handler unable to encrypt tuple: ", err)
+				return
+			}
 
-		// encode & send
-		msgBytes, err := messages.EncodeN3Message(newMsg)
-		if err != nil {
-			log.Println("write handler unable to encode message: ", err)
-			return
-		}
+			newMsg := &pb.N3Message{
+				Payload:   encryptedTuple,
+				SndId:     n3c.pubKey,
+				NameSpace: n3msg.NameSpace,
+				CtxName:   ctxQueue[i],
+				DispId:    dispatcherid,
+			}
 
-		err = n3c.natsConn.Publish(dispatcherid, msgBytes)
-		if err != nil {
-			log.Println("write handler unable to publish message: ", err)
-			return
+			// encode & send
+			msgBytes, err := messages.EncodeN3Message(newMsg)
+			if err != nil {
+				log.Println("write handler unable to encode message: ", err)
+				return
+			}
+
+			err = n3c.natsConn.Publish(dispatcherid, msgBytes)
+			if err != nil {
+				log.Println("write handler unable to publish message: ", err)
+				return
+			}
+
 		}
 	}
 
@@ -317,11 +326,7 @@ func (n3c *N3Node) startWriteHandler() error {
 			ts = append(ts, &pb.SPOTuple{Subject: s, Predicate: termID, Object: endV, Version: v}) // *** return result ***
 
 			mapTickets.Store(s, &ticket{tktID: termID, idx: endV})
-
-			if flagRmTicket {
-				go ticketRmAsync(dbClient, &mapTickets, n3msg.CtxName)
-				flagRmTicket = false
-			}
+			u.GoFn("ticket", 1, false, ticketRmAsync, dbClient, &mapTickets, n3msg.CtxName)
 		}
 		return
 	}

@@ -19,19 +19,19 @@ func getValueVerRange(dbClient *n3influx.DBClient, objID string, ctx string) (st
 	return
 }
 
-func logMeta(dbClient *n3influx.DBClient, ctx, id string, start, end, verMeta int64) {
-	// *** Save prevID's low-high version map into meta db as <"id" - "" - "low-high"> ***
-	dbClient.StoreTuple(
-		&pb.SPOTuple{
+func mkMetaTuple(ctx, id string, start, end, verMeta int64) (*pb.SPOTuple, string) {
+	return &pb.SPOTuple{
 			Subject:   id,
 			Predicate: "V",
 			Object:    fSf("%d-%d", start, end),
 			Version:   verMeta,
 		},
-		u.Str(ctx).MkSuffix("-meta")) // *** Meta Context ***
+		u.Str(ctx).MkSuffix("-meta") // *** Meta Context ***
 }
 
-func ticketRmAsync(dbClient *n3influx.DBClient, tkts *syncmap.Map, ctx string) {
+// ticketRmAsync : args : *n3influx.DBClient, *syncmap.Map, string
+func ticketRmAsync(done <-chan int, id int, args ...interface{}) {
+	dbClient, tkts, ctx := args[0].(*n3influx.DBClient), args[1].(*syncmap.Map), args[2].(string)
 	ctx = u.Str(ctx).RmSuffix("-meta")
 	for {
 		tkts.Range(func(k, v interface{}) bool {
@@ -43,10 +43,14 @@ func ticketRmAsync(dbClient *n3influx.DBClient, tkts *syncmap.Map, ctx string) {
 		})
 		time.Sleep(time.Millisecond * DELAY_CHKTERM)
 	}
+	<-done
 }
 
-func assignVer(dbClient *n3influx.DBClient, tuple *pb.SPOTuple, ctx string) bool {
+// assignVer : continue to save, additional tuple, additional context
+func assignVer(dbClient *n3influx.DBClient, tuple *pb.SPOTuple, ctx string) (goon bool, metaTuple *pb.SPOTuple, metaCtx string) {
+
 	s, p, o, v := tuple.Subject, tuple.Predicate, tuple.Object, tuple.Version
+	goon = true
 
 	// *** for value tuple ***
 	if u.Str(s).IsUUID() {
@@ -60,9 +64,9 @@ func assignVer(dbClient *n3influx.DBClient, tuple *pb.SPOTuple, ctx string) bool
 			startVer = mapIDVQueue[s][l-1]
 		}
 
-		// *** Terminator is coming, ready to log a meta ***
+		// *** Terminator is coming, ready to create a meta tuple ***
 		if p == TERMMARK {
-			mapVerToMeta.Store(prevID, &metaData{ID: prevID, StartVer: startVer, EndVer: prevVer, Ver: verMeta})
+			metaTuple, metaCtx = mkMetaTuple(ctx, prevID, startVer, prevVer, verMeta)
 			verMeta++
 		}
 
@@ -74,12 +78,12 @@ func assignVer(dbClient *n3influx.DBClient, tuple *pb.SPOTuple, ctx string) bool
 		if objDB, verDB := dbClient.GetObjVer(tuple, ctx); verDB > 0 {
 			if u.Str(objDB).FieldsSeqContain(o, " + ") {
 				tuple.Version = 0
-				return false
+				goon = false
 			}
 		}
 	}
 
-	return true
+	return
 }
 
 // inDB : is before db storing
@@ -93,15 +97,8 @@ func inDB(dbClient *n3influx.DBClient, tuple *pb.SPOTuple, ctx string) bool {
 			_, mapVerInDBChk[s], _ = getValueVerRange(dbClient, s, ctx)
 		}
 		if v <= mapVerInDBChk[s] {
-			fPln(v, mapVerInDBChk[s])
+			// fPln(v, mapVerInDBChk[s])
 			return true
-		}
-
-		// *** Save prevID's low-high version map into meta db as <"id" - "V" - "low-high"> ***
-		if value, ok := mapVerToMeta.Load(s); ok {
-			md := value.(*metaData)
-			logMeta(dbClient, ctx, s, md.StartVer, md.EndVer, md.Ver)
-			mapVerToMeta.Delete(s)
 		}
 	}
 

@@ -16,12 +16,14 @@ func (n3ic *DBClient) SubExist(tuple *pb.SPOTuple, ctx string, vLow, vHigh int64
 	vChkL := u.TerOp(vLow > 0, fSf(" AND version>=%d ", vLow), " AND version>0 ").(string)
 	vChkH := u.TerOp(vHigh > 0, fSf(" AND version<=%d ", vHigh), "").(string)
 
-	qSelect := fSf(`SELECT object, version FROM "%s" `, ctx)
-	qWhere := fSf(`WHERE subject='%s' AND tombstone='false' `+vChkL+vChkH, tuple.Subject)
+	qSelect := fSf(`SELECT object, version, tombstone FROM "%s" `, ctx)
+	qWhere := fSf(`WHERE subject='%s' `+vChkL+vChkH, tuple.Subject)
 	qStr := qSelect + qWhere + fSf(`ORDER BY %s DESC LIMIT 1`, orderByTm)
 	resp, e := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
 	PE(e, resp.Error())
-	return len(resp.Results[0].Series) != 0
+	return len(resp.Results[0].Series) != 0 && resp.Results[0].Series[0].Values[0][3].(string) == "false"
+
+	// pln(resp.Results[0].Series[0].Values[0][1]) /* [0] is time, [1] is object, as SELECT ... */
 }
 
 // BatTransEx :
@@ -50,13 +52,13 @@ func (n3ic *DBClient) BatTrans(tuple *pb.SPOTuple, ctx, ctxNew string, extSub, e
 
 	qSelect, qWhere := fSf(`SELECT version, subject, predicate, object, tombstone INTO "%s" FROM "%s" `, ctxNew, ctx), ""
 	if extSub && !extPred {
-		qWhere = fSf(`WHERE subject=~/^%s/ AND predicate='%s' AND tombstone='false' `+vChkL+vChkH, s, p)
+		qWhere = fSf(`WHERE subject=~/^%s/ AND predicate='%s' `+vChkL+vChkH, s, p)
 	} else if extSub && extPred {
-		qWhere = fSf(`WHERE subject=~/^%s/ AND predicate=~/^%s/ AND tombstone='false' `+vChkL+vChkH, s, p)
+		qWhere = fSf(`WHERE subject=~/^%s/ AND predicate=~/^%s/ `+vChkL+vChkH, s, p)
 	} else if !extSub && extPred {
-		qWhere = fSf(`WHERE subject='%s' AND predicate=~/^%s/ AND tombstone='false' `+vChkL+vChkH, s, p)
+		qWhere = fSf(`WHERE subject='%s' AND predicate=~/^%s/ `+vChkL+vChkH, s, p)
 	} else if !extSub && !extPred {
-		qWhere = fSf(`WHERE subject='%s' AND predicate='%s' AND tombstone='false' `+vChkL+vChkH, s, p)
+		qWhere = fSf(`WHERE subject='%s' AND predicate='%s' `+vChkL+vChkH, s, p)
 	}
 	qStr := qSelect + qWhere + fSf(`ORDER BY %s DESC`, orderByTm)
 
@@ -73,15 +75,15 @@ func (n3ic *DBClient) GetObjs(tuple *pb.SPOTuple, ctx string, extSub, extPred bo
 	vChkL := u.TerOp(vLow > 0, fSf(" AND version>=%d ", vLow), " AND version>0 ").(string)
 	vChkH := u.TerOp(vHigh > 0, fSf(" AND version<=%d ", vHigh), "").(string)
 
-	qSelect, qWhere := fSf(`SELECT subject, predicate, object, version FROM "%s" `, ctx), ""
+	qSelect, qWhere := fSf(`SELECT subject, predicate, object, version, tombstone FROM "%s" `, ctx), ""
 	if extSub && !extPred {
-		qWhere = fSf(`WHERE subject=~/^%s/ AND predicate='%s' AND tombstone='false' `+vChkL+vChkH, s, p)
+		qWhere = fSf(`WHERE subject=~/^%s/ AND predicate='%s' `+vChkL+vChkH, s, p)
 	} else if extSub && extPred {
-		qWhere = fSf(`WHERE subject=~/^%s/ AND predicate=~/^%s/ AND tombstone='false' `+vChkL+vChkH, s, p)
+		qWhere = fSf(`WHERE subject=~/^%s/ AND predicate=~/^%s/ `+vChkL+vChkH, s, p)
 	} else if !extSub && extPred {
-		qWhere = fSf(`WHERE subject='%s' AND predicate=~/^%s/ AND tombstone='false' `+vChkL+vChkH, s, p)
+		qWhere = fSf(`WHERE subject='%s' AND predicate=~/^%s/ `+vChkL+vChkH, s, p)
 	} else if !extSub && !extPred {
-		qWhere = fSf(`WHERE subject='%s' AND predicate='%s' AND tombstone='false' `+vChkL+vChkH, s, p)
+		qWhere = fSf(`WHERE subject='%s' AND predicate='%s' `+vChkL+vChkH, s, p)
 	}
 	qStr := qSelect + qWhere + fSf(`ORDER BY %s DESC`, orderByTm)
 
@@ -90,10 +92,9 @@ func (n3ic *DBClient) GetObjs(tuple *pb.SPOTuple, ctx string, extSub, extPred bo
 
 	if len(resp.Results[0].Series) > 0 && len(resp.Results[0].Series[0].Values) > 0 {
 		for _, l := range resp.Results[0].Series[0].Values {
-			sub, pred, obj := l[1].(string), l[2].(string), l[3].(string)
+			sub, pred, obj, _ := l[1].(string), l[2].(string), l[3].(string), l[5].(string)
 			subs, preds, objs = append(subs, sub), append(preds, pred), append(objs, obj)
-			v := Must(l[4].(json.Number).Int64()).(int64)
-			ver := v
+			ver := Must(l[4].(json.Number).Int64()).(int64)
 			vers = append(vers, ver)
 			// fPln(pred, obj, ver)
 		}
@@ -122,10 +123,16 @@ func (n3ic *DBClient) QueryTuples(tuple *pb.SPOTuple, ctx string, ts *[]*pb.SPOT
 
 /**********************************************************************************************/
 
-// GetObjVer :
+// GetObjVer : we assume the return is unique, so use "fast" way to get the result
 func (n3ic *DBClient) GetObjVer(tuple *pb.SPOTuple, ctx string) (string, int64) {
-	if obj, ver, found := n3ic.GetObj(tuple, 0, ctx, 0, 0); found {
-		return obj, ver
+	// *** slow, but can get the last one ***
+	// if obj, ver, found := n3ic.GetObj(tuple, 0, ctx, 0, 0); found {
+	// 	return obj, ver
+	// }
+	// return "", -1
+
+	if _, _, objs, vers, found := n3ic.GetObjs(tuple, ctx, false, false, 0, 0); found {
+		return objs[0], vers[0]
 	}
 	return "", -1
 }
@@ -138,8 +145,8 @@ func (n3ic *DBClient) GetObj(tuple *pb.SPOTuple, offset int, ctx string, vLow, v
 	vChkL := u.TerOp(vLow > 0, fSf(" AND version>=%d ", vLow), " AND version>0 ").(string)
 	vChkH := u.TerOp(vHigh > 0, fSf(" AND version<=%d ", vHigh), "").(string)
 
-	qSelect := fSf(`SELECT object, version FROM "%s" `, ctx)
-	qWhere := fSf(`WHERE subject='%s' AND predicate='%s' AND tombstone='false' `+vChkL+vChkH, s, p)
+	qSelect := fSf(`SELECT object, version, tombstone FROM "%s" `, ctx)
+	qWhere := fSf(`WHERE subject='%s' AND predicate='%s' `+vChkL+vChkH, s, p)
 	qStr := qSelect + qWhere + fSf(`ORDER BY %s DESC LIMIT 1 OFFSET %d`, orderByTm, offset)
 
 	resp, e := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
@@ -149,52 +156,63 @@ func (n3ic *DBClient) GetObj(tuple *pb.SPOTuple, offset int, ctx string, vLow, v
 		// pln(resp.Results[0].Series[0].Values[0])
 		// pln(resp.Results[0].Series[0].Values[0][1]) /* [0] is time, [1] is object, as SELECT ... */
 
-		obj = resp.Results[0].Series[0].Values[0][1].(string)
-		v := Must(resp.Results[0].Series[0].Values[0][2].(json.Number).Int64()).(int64)
-		ver, found = v, true
-		return
+		lastItem := resp.Results[0].Series[0].Values[0]
+		obj = lastItem[1].(string)
+		ver = Must(lastItem[2].(json.Number).Int64()).(int64)
+		tombstone := lastItem[3].(string)
+		found = u.TerOp(tombstone == "false", true, false).(bool)
 	}
 	return
 }
 
 // GetSubStruct :
-func (n3ic *DBClient) getSubStruct(tuple *pb.SPOTuple, ctx string, vLow, vHigh int64) (string, bool) {
+func (n3ic *DBClient) getSubStruct(tuple *pb.SPOTuple, ctx string, vLow, vHigh int64) (obj string, ver int64, found bool) {
 	// pln("looking for sub struct ...")
 
+	ver = -1
 	s, p := tuple.Predicate, "::"
 	vChkL := u.TerOp(vLow > 0, fSf(" AND version>=%d ", vLow), " AND version>0 ").(string)
 	vChkH := u.TerOp(vHigh > 0, fSf(" AND version<=%d ", vHigh), "").(string)
 
-	qSelect := fSf(`SELECT object, version FROM "%s" `, ctx)
-	qWhere := fSf(`WHERE subject='%s' AND predicate='%s' AND version!=0 AND tombstone='false' `+vChkL+vChkH, s, p)
+	qSelect := fSf(`SELECT object, version, tombstone FROM "%s" `, ctx)
+	qWhere := fSf(`WHERE subject='%s' AND predicate='%s' AND version!=0 `+vChkL+vChkH, s, p)
 	qStr := qSelect + qWhere + fSf(`ORDER BY %s DESC LIMIT 1`, orderByTm)
 
 	resp, e := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
 	PE(e, resp.Error())
 	if len(resp.Results[0].Series) > 0 && len(resp.Results[0].Series[0].Values) > 0 {
-		return resp.Results[0].Series[0].Values[0][1].(string), true
+		lastItem := resp.Results[0].Series[0].Values[0]
+		obj = lastItem[1].(string)
+		ver = Must(lastItem[2].(json.Number).Int64()).(int64)
+		tombstone := lastItem[3].(string)
+		found = u.TerOp(tombstone == "false", true, false).(bool)
 	}
-	return "", false
+	return
 }
 
 // GetArrInfo :
-func (n3ic *DBClient) getArrInfo(tuple *pb.SPOTuple, ctx string, vLow, vHigh int64) (int, bool) {
+func (n3ic *DBClient) getArrInfo(tuple *pb.SPOTuple, ctx string, vLow, vHigh int64) (cnt int, ver int64, found bool) {
 	// pln("looking for array info ...")
 
+	ver = -1
 	s, p := tuple.Predicate, tuple.Subject
 	vChkL := u.TerOp(vLow > 0, fSf(" AND version>=%d ", vLow), " AND version>0 ").(string)
 	vChkH := u.TerOp(vHigh > 0, fSf(" AND version<=%d ", vHigh), "").(string)
 
-	qSelect := fSf(`SELECT object, version FROM "%s" `, ctx)
-	qWhere := fSf(`WHERE subject='%s' AND predicate='%s' AND version!=0 AND tombstone='false' `+vChkL+vChkH, s, p)
+	qSelect := fSf(`SELECT object, version, tombstone FROM "%s" `, ctx)
+	qWhere := fSf(`WHERE subject='%s' AND predicate='%s' AND version!=0 `+vChkL+vChkH, s, p)
 	qStr := qSelect + qWhere + fSf(`ORDER BY %s DESC LIMIT 1`, orderByTm)
 
 	resp, e := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
 	PE(e, resp.Error())
 	if len(resp.Results[0].Series) > 0 && len(resp.Results[0].Series[0].Values) > 0 {
-		return u.Str(resp.Results[0].Series[0].Values[0][1].(string)).ToInt(), true
+		lastItem := resp.Results[0].Series[0].Values[0]
+		cnt = u.Str(lastItem[1].(string)).ToInt()
+		ver = Must(lastItem[2].(json.Number).Int64()).(int64)
+		tombstone := lastItem[3].(string)
+		found = u.TerOp(tombstone == "false", true, false).(bool)
 	}
-	return 0, false
+	return
 }
 
 // QueryTuple :
@@ -218,12 +236,12 @@ func (n3ic *DBClient) QueryTuple(tuple *pb.SPOTuple, offset int, revArr bool, ct
 		return
 	}
 
-	if stru, ok := n3ic.getSubStruct(tuple, ctx, 0, 0); ok {
+	if stru, _, ok := n3ic.getSubStruct(tuple, ctx, 0, 0); ok {
 		// fPf("got sub-struct, more work ------> %s\n", stru)
 
 		/* Array Element */
 		if i := sI(stru, "[]"); i == 0 {
-			nArr, _ := n3ic.getArrInfo(tuple, ctx, 0, 0)
+			nArr, _, _ := n3ic.getArrInfo(tuple, ctx, 0, 0)
 			// pln(nArr)
 			tuple.Predicate += fSf(".%s", stru[i+2:])
 			// pln(tuple.Predicate)

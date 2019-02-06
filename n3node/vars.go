@@ -30,9 +30,7 @@ var (
 	verMeta       int64 = 1
 	mapIDVQueue         = make(map[string][]int64)
 	mapVerInDBChk       = make(map[string]int64)
-	mapVerToMeta        = syncmap.Map{}
-	mapTickets          = syncmap.Map{} //make(map[string]*sendRec)
-	flagRmTicket        = true
+	mapTickets          = syncmap.Map{}
 )
 
 type (
