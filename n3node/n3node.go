@@ -233,78 +233,84 @@ func (n3c *N3Node) startWriteHandler() error {
 
 		// TODO: check privacy rules
 
-		// TODO: assign lamport clock version
-		if !assignVer(dbClient, tuple, n3msg.CtxName) {
-			return
+		// TODO: *** assign lamport clock version ***
+		tupleQueue, ctxQueue := []*pb.SPOTuple{tuple}, []string{n3msg.CtxName}
+
+		// *** Delete this object ***
+		if tuple.Predicate == DEADMARK {
+
+			tupleMeta := &pb.SPOTuple{Subject: tuple.Subject, Predicate: "V"}
+			ctxMeta := u.Str(n3msg.CtxName).MkSuffix("-meta")
+			obj, v := dbClient.GetObjVer(tupleMeta, ctxMeta)
+			if obj == "0-0" { // *** if last meta tuple is delete symbol, ignore the same ***
+				return
+			}
+			verMeta = u.TerOp(v == -1, int64(1), v+1).(int64)
+			tupleQueue[0] = &pb.SPOTuple{Subject: tuple.Subject, Predicate: "V", Object: "0-0", Version: verMeta}
+			ctxQueue[0] = ctxMeta
+
+		} else {
+
+			if goon, metaTuple, metaCtx := assignVer(dbClient, tuple, n3msg.CtxName); !goon {
+				return
+			} else if metaTuple != nil { // *** Save prevID's low-high version map into meta db as <"id" - "V" - "low-high"> ***
+				tupleQueue, ctxQueue = append(tupleQueue, metaTuple), append(ctxQueue, metaCtx)
+				fPln("--->meta db:", metaTuple, metaCtx)
+			}
+
 		}
 
-		// specify dispatcher
-		// n3msg.DispId = dispatcherid
+		for i := 0; i < len(tupleQueue); i++ {
 
-		// encrypt tuple payload for dispatcher
-		encryptedTuple, err := n3crypto.EncryptTuple(tuple, dispatcherid, n3c.privKey)
-		if err != nil {
-			log.Println("write handler unable to encrypt tuple: ", err)
-			return
-		}
+			// specify dispatcher
+			// n3msg.DispId = dispatcherid
 
-		newMsg := &pb.N3Message{
-			Payload:   encryptedTuple,
-			SndId:     n3c.pubKey,
-			NameSpace: n3msg.NameSpace,
-			CtxName:   n3msg.CtxName,
-			DispId:    dispatcherid,
-		}
+			// encrypt tuple payload for dispatcher
+			encryptedTuple, err := n3crypto.EncryptTuple(tupleQueue[i], dispatcherid, n3c.privKey)
+			if err != nil {
+				log.Println("write handler unable to encrypt tuple: ", err)
+				return
+			}
 
-		// encode & send
-		msgBytes, err := messages.EncodeN3Message(newMsg)
-		if err != nil {
-			log.Println("write handler unable to encode message: ", err)
-			return
-		}
+			newMsg := &pb.N3Message{
+				Payload:   encryptedTuple,
+				SndId:     n3c.pubKey,
+				NameSpace: n3msg.NameSpace,
+				CtxName:   ctxQueue[i],
+				DispId:    dispatcherid,
+			}
 
-		err = n3c.natsConn.Publish(dispatcherid, msgBytes)
-		if err != nil {
-			log.Println("write handler unable to publish message: ", err)
-			return
+			// encode & send
+			msgBytes, err := messages.EncodeN3Message(newMsg)
+			if err != nil {
+				log.Println("write handler unable to encode message: ", err)
+				return
+			}
+
+			err = n3c.natsConn.Publish(dispatcherid, msgBytes)
+			if err != nil {
+				log.Println("write handler unable to publish message: ", err)
+				return
+			}
 		}
 	}
 
 	// *** set up handler for query by inbound messages ***
 	qHandler := func(n3msg *pb.N3Message) (ts []*pb.SPOTuple) {
-		fPln("in Query qHandler")
+
 		tuple := Must(messages.DecodeTuple(n3msg.Payload)).(*pb.SPOTuple)
-		s := tuple.Subject
-		start, end, _ := getValueVerRange(dbClient, s, n3msg.CtxName)
+		s, ctx := tuple.Subject, n3msg.CtxName
+		alive, start, end, v := getValueVerRange(dbClient, s, ctx)
 
-		if sHS(n3msg.CtxName, "-sif") {
+		if !alive {
+			return // *** cannot get a ticket. OR no alive tuples can be found ***
+		}
 
-			tempCtx := fSf("temp_%d", time.Now().UnixNano())
-			n := dbClient.BatTrans(tuple, n3msg.CtxName, tempCtx, false, true, start, end)
-			fPln("v", n)
-
-			tupleS := &pb.SPOTuple{Subject: tuple.Predicate, Predicate: "::"}
-			n = dbClient.BatTrans(tupleS, n3msg.CtxName, tempCtx, true, false, 0, 0)
-			fPln("s", n)
-
-			tupleA := &pb.SPOTuple{Subject: tuple.Predicate, Predicate: tuple.Subject}
-			n = dbClient.BatTrans(tupleA, n3msg.CtxName, tempCtx, true, false, 0, 0)
-			fPln("a", n)
-
-			/******************************************/
-			arrInfo := make(map[string]int) /* key: predicate, value: array count */
-			// ctx, revArr := n3msg.CtxName, true /* Search from original measurement, reverse array order */
-			// dbClient.QueryTuple(tuple, 0, revArr, ctx, &ts, &arrInfo, start, end) /* Search from original measurement */
-			ctx, revArr := tempCtx, true                                    /* Search from temp measurement, reverse array order */
-			dbClient.QueryTuple(tuple, 0, revArr, ctx, &ts, &arrInfo, 0, 0) /* Search from temp measurement */
-			dbClient.AdjustOptionalTuples(&ts, &arrInfo)                    /* we need re-order some tuples */
-
-			/******************************************/
-			dbClient.DropCtx(tempCtx)
-
-		} else if sHS(n3msg.CtxName, "-xapi") {
-			dbClient.QueryTuples(tuple, n3msg.CtxName, &ts, start, end)
-		} else if sHS(n3msg.CtxName, "-meta") { // *** request a ticket for publishing
+		if sHS(ctx, "-sif") {
+			return queryHandle(dbClient, tuple, ctx, start, end)
+		} else if sHS(ctx, "-xapi") {
+			dbClient.QueryTuples(tuple, ctx, &ts, start, end)
+		} else if sHS(ctx, "-meta") { // *** request a ticket for publishing
 
 		AGAIN:
 			if _, ok := mapTickets.Load(s); ok {
@@ -312,23 +318,24 @@ func (n3c *N3Node) startWriteHandler() error {
 				goto AGAIN
 			}
 
-			_, ve, v := getValueVerRange(dbClient, tuple.Subject, n3msg.CtxName)
-			termID, endV := uuid.New().String(), u.I64(ve).ToStr()
+			termID, endV := uuid.New().String(), u.I64(end).ToStr()
 			ts = append(ts, &pb.SPOTuple{Subject: s, Predicate: termID, Object: endV, Version: v}) // *** return result ***
 
 			mapTickets.Store(s, &ticket{tktID: termID, idx: endV})
-
-			if flagRmTicket {
-				go ticketRmAsync(dbClient, &mapTickets, n3msg.CtxName)
-				flagRmTicket = false
-			}
+			u.GoFn("ticket", 1, false, ticketRmAsync, dbClient, &mapTickets, ctx)
 		}
 		return
 	}
 
+	// *** set up handler for delete by inbound messages ***
+	dHandler := func(n3msg *pb.N3Message) int {
+		// *** DO NOT USE THIS TO DELETE, USE 'DEADMARK' IN PUB
+		return 1234567
+	}
+
 	// start server
 	apiServer := n3grpc.NewAPIServer()
-	apiServer.SetMessageHandler(handler, qHandler)
+	apiServer.SetMessageHandler(handler, qHandler, dHandler)
 	return apiServer.Start(viper.GetInt("rpc_port"))
 }
 
