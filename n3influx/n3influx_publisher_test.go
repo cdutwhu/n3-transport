@@ -9,8 +9,7 @@ import (
 
 func TestStoreTuple(t *testing.T) {
 	defer func() { PH(recover(), "./log.txt") }()
-	dbClient, e := NewPublisher()
-	PE(e)
+	dbClient := Must(NewDBClient()).(*DBClient)
 
 	tuple := &pb.SPOTuple{
 		Subject:   "D3E34F41-9D75-101A-8C3D-00AA001A1652",

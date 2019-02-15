@@ -17,7 +17,7 @@ type DBClient struct {
 	ch chan *influx.Point
 }
 
-func NewPublisher() (*DBClient, error) {
+func NewDBClient() (*DBClient, error) {
 
 	n3ic := &DBClient{
 		ch: make(chan *influx.Point),

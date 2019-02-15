@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"../n3influx"
+	u "github.com/cdutwhu/go-util"
+	"github.com/google/uuid"
 	"github.com/nsip/n3-messages/messages/pb"
 )
 
@@ -28,6 +30,23 @@ func queryHandle(dbClt *n3influx.DBClient, tuple *pb.SPOTuple, ctx string, start
 
 	/******************************************/
 	dbClt.DropCtx(tempCtx)
+
+	return
+}
+
+func requestTicket(dbClt *n3influx.DBClient, ctx, sub string, end, v int64) (ts []*pb.SPOTuple) {
+
+AGAIN:
+	if _, ok := mapTickets.Load(sub); ok {
+		time.Sleep(time.Millisecond * DELAY_CONTEST)
+		goto AGAIN
+	}
+
+	termID, endV := uuid.New().String(), u.I64(end).ToStr()
+	ts = append(ts, &pb.SPOTuple{Subject: sub, Predicate: termID, Object: endV, Version: v}) // *** return result ***
+
+	mapTickets.Store(sub, &ticket{tktID: termID, idx: endV})
+	u.GoFn("ticket", 1, false, ticketRmAsync, dbClt, &mapTickets, ctx)
 
 	return
 }
