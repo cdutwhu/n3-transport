@@ -10,10 +10,16 @@ import (
 )
 
 // RootByID :
-func (n3ic *DBClient) RootByID(objID string, ctx string) (root string) {
+func (n3ic *DBClient) RootByID(objID, ctx, del string) (root string) {
 	if !sC(ctx, "-meta") && u.Str(objID).IsUUID() {
-		if p, _, ok := n3ic.SubExist(&pb.SPOTuple{Subject: objID}, ctx, 0, 0); ok && sC(p, ".") {
-			root = sSpl(p, ".")[0]
+
+		fPln("<1>")
+
+		if p, _, ok := n3ic.SubExist(&pb.SPOTuple{Subject: objID}, ctx, 0, 0); ok && sC(p, del) {
+
+			fPln("<2>")
+
+			root = sSpl(p, del)[0]
 		}
 	}
 	return
@@ -32,8 +38,13 @@ func (n3ic *DBClient) SubExist(tuple *pb.SPOTuple, ctx string, vLow, vHigh int64
 	resp, e := n3ic.cl.Query(influx.NewQuery(qStr, db, ""))
 	PE(e, resp.Error())
 
+	fPln("<3>")
+
 	// pln(resp.Results[0].Series[0].Values[0][1]) /* [0] is time, [1] is object, as SELECT ... */
 	if len(resp.Results[0].Series) > 0 && len(resp.Results[0].Series[0].Values) > 0 {
+
+		fPln("<4>")
+
 		last := resp.Results[0].Series[0].Values[0]
 		_, p, o, t := last[1], last[2].(string), last[3].(string), last[4].(string)
 		pred, obj, exist = p, o, t == "false"
@@ -124,7 +135,7 @@ func (n3ic *DBClient) GetObjs(tuple *pb.SPOTuple, ctx string, extSub, extPred bo
 	return
 }
 
-// QueryTuples (for XAPI query) :
+// QueryTuples :
 func (n3ic *DBClient) QueryTuples(tuple *pb.SPOTuple, ctx string, ts *[]*pb.SPOTuple, vLow, vHigh int64) {
 	_, _, exist := n3ic.SubExist(tuple, ctx, vLow, vHigh)
 	if !exist {
@@ -238,7 +249,7 @@ func (n3ic *DBClient) getArrInfo(tuple *pb.SPOTuple, ctx string, vLow, vHigh int
 }
 
 // QueryTuple :
-func (n3ic *DBClient) QueryTuple(tuple *pb.SPOTuple, offset int, revArr bool, ctx string,
+func (n3ic *DBClient) QueryTuple(tuple *pb.SPOTuple, offset int, revArr bool, ctx, pathDel, childDel string,
 	ts *[]*pb.SPOTuple, arrInfo *map[string]int, vLow, vHigh int64) {
 
 	_, _, exist := n3ic.SubExist(tuple, ctx, vLow, vHigh)
@@ -266,24 +277,24 @@ func (n3ic *DBClient) QueryTuple(tuple *pb.SPOTuple, offset int, revArr bool, ct
 		if i := sI(stru, "[]"); i == 0 {
 			nArr, _, _ := n3ic.getArrInfo(tuple, ctx, 0, 0)
 			// pln(nArr)
-			tuple.Predicate += fSf(".%s", stru[i+2:])
+			tuple.Predicate += fSf("%s%s", pathDel, stru[i+2:])
 			// pln(tuple.Predicate)
 			(*arrInfo)[tuple.Predicate] = nArr /* keep the array */
 
 			for k := 0; k < nArr; k++ {
-				n3ic.QueryTuple(tuple, u.TerOp(revArr, nArr-k-1, k).(int), revArr, ctx, ts, arrInfo, vLow, vHigh)
+				n3ic.QueryTuple(tuple, u.TerOp(revArr, nArr-k-1, k).(int), revArr, ctx, pathDel, childDel, ts, arrInfo, vLow, vHigh)
 			}
-			tuple.Predicate = u.Str(tuple.Predicate).RmTailFromLast(".")
+			tuple.Predicate = u.Str(tuple.Predicate).RmTailFromLast(pathDel)
 			return
 		}
 
 		/* None Array Element */
-		subs := strings.Split(stru, " + ")
+		subs := strings.Split(stru, childDel)
 		for _, s := range subs {
-			tuple.Predicate += fSf(".%s", s)
+			tuple.Predicate += fSf("%s%s", pathDel, s)
 			// pln(tuple.Predicate)
-			n3ic.QueryTuple(tuple, offset, revArr, ctx, ts, arrInfo, vLow, vHigh)
-			tuple.Predicate = u.Str(tuple.Predicate).RmTailFromLast(".")
+			n3ic.QueryTuple(tuple, offset, revArr, ctx, pathDel, childDel, ts, arrInfo, vLow, vHigh)
+			tuple.Predicate = u.Str(tuple.Predicate).RmTailFromLast(pathDel)
 		}
 		return
 
@@ -293,6 +304,8 @@ func (n3ic *DBClient) QueryTuple(tuple *pb.SPOTuple, offset int, revArr bool, ct
 		// return
 	}
 }
+
+// ************************************************************************************
 
 type arrOptTupleInfo struct {
 	nArray   int     /* 'this' tuple's array's count */

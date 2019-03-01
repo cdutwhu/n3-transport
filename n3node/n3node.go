@@ -234,12 +234,12 @@ func (n3c *N3Node) startWriteHandler() error {
 		// TODO: *** assign lamport clock version ***
 		tupleQueue, ctxQueue := []*pb.SPOTuple{tuple}, []string{n3msg.CtxName}
 
-		if tuple.Predicate == DEADMARK { //                                         *** Delete this object ***
+		if tuple.Predicate == DEADMARK { //           *** Delete this object ***
 
 			tupleMeta := &pb.SPOTuple{Subject: tuple.Subject, Predicate: "V"}
 			ctxMeta := u.Str(n3msg.CtxName).MkSuffix("-meta")
 			obj, v := dbClient.GetObjVer(tupleMeta, ctxMeta)
-			if obj == "0-0" { //                                                    *** if last meta tuple is delete symbol, ignore the same ***
+			if obj == "0-0" { //                      *** if the last meta tuple is delete symbol, do nothing ***
 				return
 			}
 			verMeta = u.TerOp(v == -1, int64(1), v+1).(int64)
@@ -248,9 +248,9 @@ func (n3c *N3Node) startWriteHandler() error {
 
 		} else {
 
-			if goon, metaTuple, metaCtx := assignVer(dbClient, tuple, n3msg.CtxName); !goon {
+			if goon, metaTuple, metaCtx := assignVer(dbClient, tuple, n3msg.CtxName, " + "); !goon {
 				return
-			} else if metaTuple != nil { //                                         *** Save prevID's low-high version map into meta db as <"id" "V" "low-high"> ***
+			} else if metaTuple != nil { //           *** Save prevID's low-high version map into meta db as <"id" "V" "low-high"> ***
 				tupleQueue, ctxQueue = append(tupleQueue, metaTuple), append(ctxQueue, metaCtx)
 				fPln("--->meta db:", metaTuple, metaCtx)
 			}
@@ -295,42 +295,55 @@ func (n3c *N3Node) startWriteHandler() error {
 	// *** set up handler for query by inbound messages ***
 	qHandler := func(n3msg *pb.N3Message) (ts []*pb.SPOTuple) {
 
+		const pathDel = " ~ "
+		const childDel = " + "
 		tuple := Must(messages.DecodeTuple(n3msg.Payload)).(*pb.SPOTuple)
 		s, p, ctx := tuple.Subject, tuple.Predicate, n3msg.CtxName
 
-		if p != "::" { //                                                                      *** values query ***
+		if p != "::" { //                                                                     *** values query ***
 
-			if p == "" { //                                                                    *** root query ***
+			if p == "" { //                                                                   *** root query ***
 
-				root := dbClient.RootByID(s, ctx)
+				root := dbClient.RootByID(s, ctx, pathDel)
 				ts = append(ts, &pb.SPOTuple{Subject: s, Predicate: "root", Object: root})
 
-			} else if p == "ARR" { //                                                          *** array info query ***
+			} else if p == "ARR" { //                                                         *** array info query ***
 
-				root := dbClient.RootByID(s, ctx)
+				root := dbClient.RootByID(s, ctx, pathDel)
 				if ss, _, os, vs, ok := dbClient.GetObjs(&pb.SPOTuple{Subject: root, Predicate: s}, ctx, true, false, 0, 0); ok {
 					for i := range ss {
 						ts = append(ts, &pb.SPOTuple{Subject: s, Predicate: ss[i], Object: os[i], Version: vs[i]})
 					}
 				}
 
-			} else { //                                                                        *** values query ***
+			} else { //  p == PATH                                                            *** values query ***
 
-				if alive, start, end, v := getValueVerRange(dbClient, s, ctx); alive { //      *** Meta file to check ***
+				fPln("<here values query 1>", s, p, ctx)
+
+				if alive, start, end, v := getValueVerRange(dbClient, s, ctx); alive { //     *** Meta file to check ***
 					if sHS(ctx, "-sif") {
-						return queryHandle(dbClient, tuple, ctx, start, end)
+						
+						fPln("<here values query sif 2>", s, p, ctx)
+						return queryHandle(dbClient, tuple, ctx, pathDel, childDel, start, end)
+
 					} else if sHS(ctx, "-xapi") {
+						
+						fPln("<here values query xapi 3>", s, p, ctx)
 						dbClient.QueryTuples(tuple, ctx, &ts, start, end)
-					} else if sHS(ctx, "-meta") { //                                           *** request a ticket for publishing ***
+
+					} else if sHS(ctx, "-meta") { //                                          *** request a ticket for publishing ***
+
+						fPln("<here values query meta 4>", s, p, ctx)
 						return requestTicket(dbClient, ctx, s, end, v)
+
 					}
 				}
 
 			}
 
-		} else { //                                                                            *** struct query ***
+		} else { //  p == "::"                                                                *** struct query ***
 
-			root := sSpl(s, ".")[0]
+			root := sSpl(s, pathDel)[0]
 			tuple := &pb.SPOTuple{Subject: root, Predicate: "::"}
 			if ss, ps, os, vs, ok := dbClient.GetObjs(tuple, ctx, true, false, 0, 0); ok {
 				for i := range ss {
@@ -348,8 +361,8 @@ func (n3c *N3Node) startWriteHandler() error {
 		return
 	}
 
-	dHandler := func(n3msg *pb.N3Message) int { //                        *** set up handler for delete by inbound messages ***
-		return 1234567 //                                                 *** DO NOT USE THIS TO DELETE, USE 'DEADMARK' IN PUB ***
+	dHandler := func(n3msg *pb.N3Message) int { //      *** set up handler for delete by inbound messages ***
+		return 1234567 //                               *** DO NOT USE THIS TO DELETE, USE 'DEADMARK' IN PUB ***
 	}
 
 	// start server

@@ -58,7 +58,7 @@ func ticketRmAsync(done <-chan int, id int, args ...interface{}) {
 }
 
 // assignVer : continue to save, additional tuple, additional context
-func assignVer(dbClient *n3influx.DBClient, tuple *pb.SPOTuple, ctx string) (goon bool, metaTuple *pb.SPOTuple, metaCtx string) {
+func assignVer(dbClient *n3influx.DBClient, tuple *pb.SPOTuple, ctx, childDel string) (goon bool, metaTuple *pb.SPOTuple, metaCtx string) {
 
 	s, p, o, v := tuple.Subject, tuple.Predicate, tuple.Object, tuple.Version
 	goon = true
@@ -86,7 +86,7 @@ func assignVer(dbClient *n3influx.DBClient, tuple *pb.SPOTuple, ctx string) (goo
 	// *** check struct tuple ***
 	if p == "::" {
 		if objDB, verDB := dbClient.GetObjVer(tuple, ctx); verDB > 0 {
-			if u.Str(objDB).FieldsSeqContain(o, " + ") {
+			if u.Str(objDB).FieldsSeqContain(o, childDel) {
 				tuple.Version = 0
 				goon = false
 			}
