@@ -300,14 +300,14 @@ func (n3c *N3Node) startWriteHandler() error {
 		tuple := Must(messages.DecodeTuple(n3msg.Payload)).(*pb.SPOTuple)
 		s, p, ctx := tuple.Subject, tuple.Predicate, n3msg.CtxName
 
-		if p != "::" { //                                                                     *** values query ***
+		if p != "::" { //                                                                   *** values query ***
 
-			if p == "" { //                                                                   *** root query ***
+			if p == "" { //                                                                 *** root query ***
 
 				root := dbClient.RootByID(s, ctx, pathDel)
 				ts = append(ts, &pb.SPOTuple{Subject: s, Predicate: "root", Object: root})
 
-			} else if p == "ARR" { //                                                         *** array info query ***
+			} else if p == "[]" { //                                                        *** array info query ***
 
 				root := dbClient.RootByID(s, ctx, pathDel)
 				if ss, _, os, vs, ok := dbClient.GetObjs(&pb.SPOTuple{Subject: root, Predicate: s}, ctx, true, false, 0, 0); ok {
@@ -316,27 +316,30 @@ func (n3c *N3Node) startWriteHandler() error {
 					}
 				}
 
-			} else { //  p == PATH                                                            *** values query ***
+				fPln("A ------>", root, len(ts))
 
-				fPln("<here values query 1>", s, p, ctx)
+			} else { //  p == PATH                                                          *** values query ***
 
-				if alive, start, end, v := getValueVerRange(dbClient, s, ctx); alive { //     *** Meta file to check ***
-					if sHS(ctx, "-sif") {
-						
-						fPln("<here values query sif 2>", s, p, ctx)
-						return queryHandle(dbClient, tuple, ctx, pathDel, childDel, start, end)
+				// fPln("<here values query 1>", s, p, ctx)
 
-					} else if sHS(ctx, "-xapi") {
-						
-						fPln("<here values query xapi 3>", s, p, ctx)
+				if alive, start, end, v := getValueVerRange(dbClient, s, ctx); alive { //   *** Meta file to check ***
+					if !sHS(ctx, "-meta") {
 						dbClient.QueryTuples(tuple, ctx, &ts, start, end)
-
-					} else if sHS(ctx, "-meta") { //                                          *** request a ticket for publishing ***
-
-						fPln("<here values query meta 4>", s, p, ctx)
-						return requestTicket(dbClient, ctx, s, end, v)
-
+					} else {
+						return requestTicket(dbClient, ctx, s, end, v) //                   *** request a ticket for publishing ***
 					}
+
+					// *** we do NOT use different queries ***
+					// if sHS(ctx, "-sif") {
+					// 	// fPln("<here values query sif 2>", s, p, ctx)
+					// 	return queryHandle(dbClient, tuple, ctx, pathDel, childDel, start, end)
+					// } else if sHS(ctx, "-xapi") {
+					// 	// fPln("<here values query xapi 3>", s, p, ctx)
+					// 	dbClient.QueryTuples(tuple, ctx, &ts, start, end)
+					// } else if sHS(ctx, "-meta") { //                                      *** request a ticket for publishing ***
+					// 	// fPln("<here values query meta 4>", s, p, ctx)
+					// 	return requestTicket(dbClient, ctx, s, end, v)
+					// }
 				}
 
 			}
