@@ -8,12 +8,12 @@ import (
 	"log"
 	"sync"
 
-	"../n3config"
-	"../n3liftbridge"
 	liftbridge "github.com/liftbridge-io/go-liftbridge"
-	lbproto "github.com/liftbridge-io/go-liftbridge/liftbridge-grpc"
+	lbproto "github.com/liftbridge-io/liftbridge-grpc/go"
 	nats "github.com/nats-io/go-nats"
 	"github.com/nsip/n3-messages/messages"
+	"github.com/nsip/n3-transport/n3config"
+	"github.com/nsip/n3-transport/n3liftbridge"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 )
@@ -200,7 +200,7 @@ func (disp *Dispatcher) startApprovalHandler() error {
 
 	// create the subscription and run until context is cancelled
 	go func() {
-		err := disp.lbConn.Subscribe(ctx, "approvals", "approvals-stream", handler, liftbridge.StartAtEarliestReceived())
+		err := disp.lbConn.Subscribe(ctx, "approvals-stream", handler, liftbridge.StartAtEarliestReceived())
 		if err != nil {
 			log.Println("error subscribing approvals handler: ", err)
 			disp.removeHandlerContext("approvals")

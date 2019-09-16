@@ -3,34 +3,49 @@ package n3node
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	u "github.com/cdutwhu/go-util"
-	"golang.org/x/sync/syncmap"
+	w "github.com/cdutwhu/go-wrappers"
 )
 
 var (
-	PE   = u.PanicOnError
-	PE1  = u.PanicOnError1
-	PH   = u.PanicHandle
-	PC   = u.PanicOnCondition
-	Must = u.Must
+	must        = u.Must
+	ph          = u.PH
+	IF          = u.IF
+	matchAssign = u.MatchAssign
+	trueAssign  = u.TrueAssign
+	GoFn        = u.GoFn
+
+	INum2Str  = w.INum2Str
+	IArrEleIn = w.IArrEleIn
+	IArrRmRep = w.IArrRmRep
 
 	fPln = fmt.Println
 	fPf  = fmt.Printf
 	fSf  = fmt.Sprintf
 
-	sHP  = strings.HasPrefix
-	sHS  = strings.HasSuffix
 	sSpl = strings.Split
 
-	prevID        = ""
-	prevPred      = ""
-	prevVer       int64
-	startVer      int64
-	verMeta       int64 = 1
-	mapIDVQueue         = make(map[string][]int64)
-	mapVerInDBChk       = make(map[string]int64)
-	mapTickets          = syncmap.Map{}
+	prevIDv  = ""
+	prevVerV int64
+	prevIDs  = ""
+	prevVerS int64
+	prevIDa  = ""
+	prevVerA int64
+
+	startVer  int64
+	mIDvQueue = make(map[string][]int64)
+	mIDsQueue = make(map[string][]int64)
+	mIDaQueue = make(map[string][]int64)
+	// mTickets  = syncmap.Map{}
+
+	//                        object     context    path   R/W
+	pcObjCtxPathRW = make(map[string]map[string]map[string]string)
+	forroot        = ""
+	forctx         = ""
+
+	mpObjIDVer *sync.Map
 )
 
 type (
@@ -45,11 +60,21 @@ type (
 		tktID string
 		idx   string
 	}
+
+	S   = w.Str
+	Ss  = w.Strs
+	I64 = w.I64
 )
 
 const (
-	DEADMARK      = "TOMBSTONE"
-	TERMMARK      = "ENDENDEND"
-	DELAY_CONTEST = 500
-	DELAY_CHKTERM = 100
+	MARKDead      = "TOMBSTONE"
+	MARKTerm      = "--------------------------------------" // len(uuid) + 2 : 38
+	DELIPath      = " ~ "
+	DELIChild     = " + "
+	MARKDelID     = "00000000-0000-0000-0000-000000000000"
+	DELAY_CONTEST = 2000
+	DELAY_CHKTERM = 5000
+	NOREAD        = "******"
+	NOWRITE       = "------"
+	BIGVER        = 999999999
 )

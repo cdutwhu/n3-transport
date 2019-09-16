@@ -7,25 +7,24 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
-	"../n3config"
-	"../n3crypto"
-	"../n3influx"
-	"../n3liftbridge"
-	"../n3nats"
 	liftbridge "github.com/liftbridge-io/go-liftbridge"
-	lbproto "github.com/liftbridge-io/go-liftbridge/liftbridge-grpc"
+	lbproto "github.com/liftbridge-io/liftbridge-grpc/go"
 	nats "github.com/nats-io/go-nats"
 	"github.com/nsip/n3-messages/messages"
 	"github.com/nsip/n3-messages/messages/pb"
 	"github.com/nsip/n3-messages/n3grpc"
+	"github.com/nsip/n3-transport/n3config"
+	"github.com/nsip/n3-transport/n3crypto"
+	"github.com/nsip/n3-transport/n3influx"
+	"github.com/nsip/n3-transport/n3liftbridge"
+	"github.com/nsip/n3-transport/n3nats"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
-
-	u "github.com/cdutwhu/go-util"
 )
 
-//
+// N3Node :
 // main node tht handles read / write operations
 // with the transport layer
 //
@@ -33,13 +32,14 @@ type N3Node struct {
 	natsConn         *nats.Conn
 	lbConn           liftbridge.Client
 	handlerContexts  map[string]func()
-	dispatcherId     string
+	dispatcherID     string
 	mutex            sync.Mutex
 	pubKey           string
 	privKey          string
 	approvedContexts map[string]bool
 }
 
+// NewNode :
 func NewNode() (*N3Node, error) {
 
 	err := checkConfig()
@@ -183,7 +183,7 @@ func (n3c *N3Node) startApprovalHandler() error {
 
 	// create the subscription and run until context is cancelled
 	go func() {
-		err := n3c.lbConn.Subscribe(ctx, "approvals", "approvals-stream", handler, liftbridge.StartAtEarliestReceived())
+		err := n3c.lbConn.Subscribe(ctx, "approvals-stream", handler, liftbridge.StartAtEarliestReceived())
 		if err != nil {
 			log.Println("node error subscribing approvals handler: ", err)
 			n3c.removeHandlerContext("approvals")
@@ -209,8 +209,21 @@ func (n3c *N3Node) startWriteHandler() error {
 		return errors.Wrap(err, "node closing: no dispatcher available.")
 	}
 
-	// set up handler for inbound messages
-	handler := func(n3msg *pb.N3Message) {
+	// Fetch Data to be Cached
+	if dbClient.DbTblExists("databases", "tuples") {
+		// Fetch Privacy Control Rule
+		if dbClient.DbTblExists("measurements", "ctxid") && dbClient.DbTblExists("measurements", "privctrl") {
+			pcObjCtxPathRW = mkPrivCtrl(dbClient)
+		}
+		// Fetch Meta Data
+		mpObjIDVer = mkObjIDVerBuf(dbClient)
+	}
+	if mpObjIDVer == nil {
+		mpObjIDVer = &sync.Map{}
+	}
+
+	// set up handler for inbound messages [SPREAD]
+	mHandler := func(n3msg *pb.N3Message) {
 
 		// force sender id to be this node
 		n3msg.SndId = n3c.pubKey
@@ -222,40 +235,76 @@ func (n3c *N3Node) startWriteHandler() error {
 			return
 		}
 
-		// check authorisation
-		approvalScope := fmt.Sprintf("%s.%s.%s", n3msg.SndId, n3msg.NameSpace, n3msg.CtxName)
+		s, p, o, v, ctx := tuple.Subject, tuple.Predicate, tuple.Object, tuple.Version, n3msg.CtxName
+		root := sSpl(p, DELIPath)[0]
+		now := time.Now().Format("2006-01-02 15:04:05.000")
+
+		// CHECK AUTHORISATION
+		approvalScope := fmt.Sprintf("%s.%s.%s", n3msg.SndId, n3msg.NameSpace, ctx)
 		if !n3c.approved(approvalScope) {
-			log.Println("you are not authorised to send to context: ", n3msg.NameSpace, n3msg.CtxName)
+			log.Println("you are not authorised to send to context: ", n3msg.NameSpace, ctx)
 			return
 		}
 
-		// TODO: check privacy rules
+		tupleQueue, ctxQueue := []*pb.SPOTuple{tuple}, []string{ctx} // *** Queue: 1.priv 2.ctxid || 1.data 2.meta ***
 
-		// TODO: *** assign lamport clock version ***
-		tupleQueue, ctxQueue := []*pb.SPOTuple{tuple}, []string{n3msg.CtxName}
-
-		if tuple.Predicate == DEADMARK { //           *** Delete this object ***
-
-			tupleMeta := &pb.SPOTuple{Subject: tuple.Subject, Predicate: "V"}
-			ctxMeta := u.Str(n3msg.CtxName).MkSuffix("-meta")
-			obj, v := dbClient.GetObjVer(tupleMeta, ctxMeta)
-			if obj == "0-0" { //                      *** if the last meta tuple is delete symbol, do nothing ***
+		// DONE: PRIVACY, STORE PRIVACY CONTROL FILE to <privctrl> & register it to <ctxid>
+		if ctx == "privctrl" {
+			if S(p).Contains("forcontext") { //      *** register to ctxid (privacy control file) ***
+				vNext := dbClient.LatestVer("ctxid") + 1
+				tupleQueue = append(tupleQueue, &pb.SPOTuple{Subject: root, Predicate: o, Object: s, Version: vNext})
+				ctxQueue = append(ctxQueue, "ctxid")
+				goto PUB
+			}
+			if !S(s).IsUUID() || S(o).HP("::") || S(o).HP("[]") { // *** ignore useless tuples ***
 				return
 			}
-			verMeta = u.TerOp(v == -1, int64(1), v+1).(int64)
-			tupleQueue[0] = &pb.SPOTuple{Subject: tuple.Subject, Predicate: "V", Object: "0-0", Version: verMeta}
-			ctxQueue[0] = ctxMeta
-
-		} else {
-
-			if goon, metaTuple, metaCtx := assignVer(dbClient, tuple, n3msg.CtxName, " + "); !goon {
-				return
-			} else if metaTuple != nil { //           *** Save prevID's low-high version map into meta db as <"id" "V" "low-high"> ***
-				tupleQueue, ctxQueue = append(tupleQueue, metaTuple), append(ctxQueue, metaCtx)
-				fPln("--->meta db:", metaTuple, metaCtx)
-			}
-
 		}
+
+		if ctx == "ctxid" { //                                       *** register / unregister to ctxid (cli) ***
+			tupleQueue, ctxQueue = []*pb.SPOTuple{}, []string{}
+			vNext := dbClient.LatestVer("ctxid") + 1
+			tupleQueue = append(tupleQueue, &pb.SPOTuple{Subject: s, Predicate: p, Object: o, Version: vNext})
+			ctxQueue = append(ctxQueue, "ctxid")
+			goto PUB
+		}
+
+		// DONE: PRIVACY, CHECK PRIVACY RULES
+		if ctx != "privctrl" && ctx != "ctxid" {
+			if pcCtxPathCtrl, ok := pcObjCtxPathRW[root]; ok {
+				if pcPathCtrl, ok1 := pcCtxPathCtrl[ctx]; ok1 {
+					if ctrl, ok2 := pcPathCtrl[p]; ok2 {
+						switch {
+						case IArrEleIn(ctrl, Ss{"R/W", "W/R", "RW", "WR", "W"}):
+						case S(ctrl).IsUUID():
+						default:
+							tupleQueue[0] = &pb.SPOTuple{Subject: s, Predicate: p, Object: NOWRITE, Version: v}
+						}
+					}
+				}
+			}
+		}
+
+		// DONE: ASSIGN TUPLE VERSION
+		if p == MARKDead { //                                     *** Delete object ***
+			if exist, alive := dbClient.Status(ctx, s); exist && alive {
+				tupleV := &pb.SPOTuple{Subject: s, Predicate: p, Object: now, Version: -1}
+				tupleS := &pb.SPOTuple{Subject: "::" + s, Predicate: p, Object: now, Version: -1}
+				tupleA := &pb.SPOTuple{Subject: "[]" + s, Predicate: p, Object: now, Version: -1}
+				ctxMeta := S(ctx).MkSuffix("-meta").V()
+				tupleQueue = []*pb.SPOTuple{tupleV, tupleS, tupleA}
+				ctxQueue = []string{ctxMeta, ctxMeta, ctxMeta}
+			} else {
+				return
+			}
+		} else {
+			if metaTuple, metaCtx := assignVer(dbClient, tuple, ctx); metaTuple != nil { // *** Only at end of an whole object, can get metaTuple ***
+				// *** Store prevID's low-high version map into meta context as <"id" "V/S/A" "low-high"> ***
+				tupleQueue, ctxQueue = append(tupleQueue, metaTuple), append(ctxQueue, metaCtx)
+			}
+		}
+
+	PUB:
 
 		for i := 0; i < len(tupleQueue); i++ {
 
@@ -284,85 +333,135 @@ func (n3c *N3Node) startWriteHandler() error {
 				return
 			}
 
+			// only for testing (A+B+C)
+			// return
+
 			err = n3c.natsConn.Publish(dispatcherid, msgBytes)
 			if err != nil {
 				log.Println("write handler unable to publish message: ", err)
 				return
 			}
 		}
-	}
+
+	} // mHandler
 
 	// *** set up handler for query by inbound messages ***
 	qHandler := func(n3msg *pb.N3Message) (ts []*pb.SPOTuple) {
 
-		const pathDel = " ~ "
-		const childDel = " + "
-		tuple := Must(messages.DecodeTuple(n3msg.Payload)).(*pb.SPOTuple)
-		s, p, ctx := tuple.Subject, tuple.Predicate, n3msg.CtxName
+		// force sender id to be this node
+		n3msg.SndId = n3c.pubKey
 
-		if p != "::" { //                                                                   *** values query ***
+		tuple := must(messages.DecodeTuple(n3msg.Payload)).(*pb.SPOTuple)
+		s, p, o, ctx := tuple.Subject, tuple.Predicate, tuple.Object, n3msg.CtxName
+		// fPf("Query : <%s> <%s> <%s> <%s>\n", s, p, o, ctx)
 
-			if p == "" { //                                                                 *** root query ***
+		// check authorisation
+		approvalScope := fmt.Sprintf("%s.%s.%s", n3msg.SndId, n3msg.NameSpace, ctx)
+		if !n3c.approved(approvalScope) {
+			log.Println("you are not authorised to query to context: ", n3msg.NameSpace, ctx)
+			return
+		}
 
-				root := dbClient.RootByID(s, ctx, pathDel)
+		// *** <ObjectID / TerminatorID List> query ***
+		if IArrEleIn(s, Ss{"*", ""}) && p != "" && o != "" {
+			var IDs []string
+			switch {
+			case p == MARKTerm: //                                     *** <TerminatorID> by Terminator & ObjectID ***
+				IDs = dbClient.IDListByPathValue(ctx, p, o, true, false)
+			case S(p).Contains(DELIPath): //                           *** <ObjectIDs> by path-value ***
+				IDs = dbClient.IDListByPathValue(ctx, p, o, false, true)
+			case IArrEleIn(p, Ss{"root", "ROOT", "Root"}): //          *** <ObjectIDs> by root name ***
+				IDs = dbClient.IDListByRoot(ctx, o, DELIPath, true)
+			}
+
+			if IDs != nil {
+				for _, id := range IArrRmRep(Ss(IDs)).([]string) {
+					if s == "*" || p == MARKTerm { //                                       *** including deleted ObjectID OR get TerminatorID ***
+						ts = append(ts, &pb.SPOTuple{Subject: id, Predicate: p, Object: o})
+					} else { //                                                             *** excluding deleted ObjectID ***
+						if exist, alive := dbClient.Status(ctx, id); exist && alive {
+							ts = append(ts, &pb.SPOTuple{Subject: id, Predicate: p, Object: o})
+						}
+					}
+				}
+			}
+			return
+		}
+
+		// *** <Data> query; <SUBJECT> 's' must be ObjectID / TerminatorID ***
+		switch p {
+		case MARKTerm: //   *** <Terminator Line's ObjectID> ***
+			{
+				if _, _, ID, _, found := dbClient.OsBySP(ctx, s, p, false, false, 0, 0); found {
+					ts = append(ts, &pb.SPOTuple{Subject: s, Predicate: p, Object: ID[0]})
+				}
+			}
+		case "": //         *** <ROOT> ***
+			{
+				root := dbClient.RootByID(ctx, s, DELIPath)
 				ts = append(ts, &pb.SPOTuple{Subject: s, Predicate: "root", Object: root})
-
-			} else if p == "[]" { //                                                        *** array info query ***
-
-				root := dbClient.RootByID(s, ctx, pathDel)
-				if ss, _, os, vs, ok := dbClient.GetObjs(&pb.SPOTuple{Subject: root, Predicate: s}, ctx, true, false, 0, 0); ok {
-					for i := range ss {
-						ts = append(ts, &pb.SPOTuple{Subject: s, Predicate: ss[i], Object: os[i], Version: vs[i]})
+			}
+		case "[]", "::": // *** <ARRAY / STRUCT> ***
+			{
+				metaType := matchAssign(p, "::", "[]", "S", "A", "ERR").(string)
+				if start, end, _ := getVerRange(dbClient, ctx, p+s, metaType); start >= 1 { // *** Meta file to check alive ***
+					root := dbClient.RootByID(ctx, s, DELIPath)
+					if ss, ps, os, vs, ok := dbClient.OsBySP(ctx, p+s, root, false, true, start, end); ok {
+						for i := range ss {
+							ts = append(ts, &pb.SPOTuple{Subject: s, Predicate: ps[i], Object: os[i], Version: vs[i]})
+						}
 					}
 				}
+			}
+		default: //         *** <VALUES> ***
+			{
+				metaType := trueAssign(S(s).HP("::"), S(s).HP("[]"), "S", "A", "V").(string)
 
-				fPln("A ------>", root, len(ts))
-
-			} else { //  p == PATH                                                          *** values query ***
-
-				// fPln("<here values query 1>", s, p, ctx)
-
-				if alive, start, end, v := getValueVerRange(dbClient, s, ctx); alive { //   *** Meta file to check ***
-					if !sHS(ctx, "-meta") {
-						dbClient.QueryTuples(tuple, ctx, &ts, start, end)
-					} else {
-						return requestTicket(dbClient, ctx, s, end, v) //                   *** request a ticket for publishing ***
+				if S(ctx).HS("-meta") { // *** REQUEST A TICKET FOR PUBLISHING ***
+					if ver, ok := mpObjIDVer.Load(s); ok {
+						return mkTicket(dbClient, ctx, s, ver.(int64), BIGVER)
 					}
+					return mkTicket(dbClient, ctx, s, 0, BIGVER)
 
-					// *** we do NOT use different queries ***
-					// if sHS(ctx, "-sif") {
-					// 	// fPln("<here values query sif 2>", s, p, ctx)
-					// 	return queryHandle(dbClient, tuple, ctx, pathDel, childDel, start, end)
-					// } else if sHS(ctx, "-xapi") {
-					// 	// fPln("<here values query xapi 3>", s, p, ctx)
-					// 	dbClient.QueryTuples(tuple, ctx, &ts, start, end)
-					// } else if sHS(ctx, "-meta") { //                                      *** request a ticket for publishing ***
-					// 	// fPln("<here values query meta 4>", s, p, ctx)
-					// 	return requestTicket(dbClient, ctx, s, end, v)
+					// if _, end, v := getVerRange(dbClient, ctx, s, metaType); end != -1 { // *** Meta file to check alive ***
+					// 	return mkTicket(dbClient, ctx, s, end, v) //                        *** make a ticket for publishing, -1 means it's dead ***
 					// }
+					// return
 				}
 
-			}
+				//          *** GENERAL QUERY ***
+				if start, end, _ := getVerRange(dbClient, ctx, s, metaType); start >= 1 { // *** Meta file to check alive ***
 
-		} else { //  p == "::"                                                                *** struct query ***
+					fPln("*** GENERAL QUERY ***")
+					// Fetch all tuples [ts]
+					dbClient.TuplesBySP(ctx, tuple, &ts, start, end)
 
-			root := sSpl(s, pathDel)[0]
-			tuple := &pb.SPOTuple{Subject: root, Predicate: "::"}
-			if ss, ps, os, vs, ok := dbClient.GetObjs(tuple, ctx, true, false, 0, 0); ok {
-				for i := range ss {
-					ts = append(ts, &pb.SPOTuple{
-						Subject:   ss[i],
-						Predicate: ps[i],
-						Object:    os[i],
-						Version:   vs[i],
-					})
+					fPln("*** CHECKING PRIVACY ***")
+					// DONE: PRIVACY, check privacy rules, modify [ts]
+					if !IArrEleIn(ctx, Ss{"ctxid", "privctrl"}) && !S(ctx).HS("meta") {
+						for _, pt := range ts {
+							if S(pt.Subject).IsUUID() && S(pt.Predicate) != MARKTerm {
+								root := sSpl(pt.Predicate, DELIPath)[0]
+								if pcCtxPathRW, ok1 := pcObjCtxPathRW[root]; ok1 {
+									if pcPathRW, ok2 := pcCtxPathRW[ctx]; ok2 { //              *** has rules ***
+										// fPln("DEBUG", pt.Predicate, pcPathRW[pt.Predicate])
+										switch {
+										case S(pcPathRW[pt.Predicate]).IsUUID():
+											continue
+										case !IArrEleIn(pcPathRW[pt.Predicate], Ss{"R/W", "R", "RW", "WR"}):
+											pt.Object = NOREAD
+										}
+									}
+								}
+							}
+						}
+					}
 				}
 			}
-
 		}
 
 		return
-	}
+	} // qHandler
 
 	dHandler := func(n3msg *pb.N3Message) int { //      *** set up handler for delete by inbound messages ***
 		return 1234567 //                               *** DO NOT USE THIS TO DELETE, USE 'DEADMARK' IN PUB ***
@@ -370,7 +469,7 @@ func (n3c *N3Node) startWriteHandler() error {
 
 	// start server
 	apiServer := n3grpc.NewAPIServer()
-	apiServer.SetMessageHandler(handler, qHandler, dHandler)
+	apiServer.SetMessageHandler(mHandler, qHandler, dHandler)
 	return apiServer.Start(viper.GetInt("rpc_port"))
 }
 
@@ -399,7 +498,7 @@ func (n3c *N3Node) startReadHandler() error {
 	// start up the influx publisher
 	// TODO: abstract multi-db handlers to channel reader
 	// to multiplex send to different data-stores
-	pub, err := n3influx.NewDBClient()
+	dbClt, err := n3influx.NewDBClient()
 	if err != nil {
 		return errors.Wrap(err, "read handler cannot connect to influx store:")
 	}
@@ -433,19 +532,61 @@ func (n3c *N3Node) startReadHandler() error {
 			return
 		}
 
-		// *** exclude "legend liftbridge data" ***
-		if inDB(pub, tuple, n3msg.CtxName) {
-			return
+		// Added ****************************************** //
+		s, p, o, _ := tuple.Subject, tuple.Predicate, tuple.Object, tuple.Version
+
+		// PRIVACY *** update pcObjCtxPathRW at runtime ***
+		if n3msg.CtxName == "privctrl" {
+			forroot = IF(p != MARKTerm, sSpl(p, DELIPath)[0], forroot).(string)
+			forctx = IF(S(p).HS("forcontext"), o, forctx).(string)
+			if _, ok := pcObjCtxPathRW[forroot]; !ok {
+				//                                 context    path   rw
+				pcObjCtxPathRW[forroot] = make(map[string]map[string]string)
+			}
+			if _, ok := pcObjCtxPathRW[forroot][forctx]; !ok { //        *** forctx:  begin with "", then "ctx***" ***
+				//                                         path   rw
+				pcObjCtxPathRW[forroot][forctx] = make(map[string]string)
+			}
+			if p == MARKTerm {
+				// change forctx("")'s value back to its forctx("abc")'s related value
+				for path, rw := range pcObjCtxPathRW[forroot][""] {
+					pcObjCtxPathRW[forroot][forctx][path] = IF(forctx != "", rw, "error").(string)
+				}
+				forctx = ""
+				pcObjCtxPathRW[forroot][forctx] = make(map[string]string)
+
+			} else {
+				pcObjCtxPathRW[forroot][forctx][p] = o
+			}
 		}
 
-		err = pub.StoreTuple(tuple, n3msg.CtxName)
+		// PRIVACY *** delete pcObjCtxPathRW at runtime ***
+		if n3msg.CtxName == "ctxid" {
+			if o == MARKDelID && pcObjCtxPathRW[s] != nil {
+				delete(pcObjCtxPathRW[s], p)
+			}
+		}
+
+		// Update ObjIDVerCache
+		if S(n3msg.CtxName).HS("-meta") {
+			mpObjIDVer.Store(s, S(sSpl(o, "-")[1]).ToInt64())
+		}
+
+		// only for testing (A+B+D)
+		// return
+
+		// *** exclude "legend liftbridge data" ***
+		// if inDB(dbClt, n3msg.CtxName, tuple) {
+		// 	return
+		// }
+
+		err = dbClt.StoreTuple(tuple, n3msg.CtxName)
 		if err != nil {
 			log.Println("error storing tuple:", err)
 			return
 		}
 		// log.Println("...tuple stored successfully.")
 		lastMessageOffset = msg.Offset
-
 	}
 
 	// create context to control async subscription
@@ -455,7 +596,7 @@ func (n3c *N3Node) startReadHandler() error {
 	// create the subscription and run until context is cancelled
 	go func() {
 		streamName := fmt.Sprintf("%s-stream", n3c.pubKey)
-		err := n3c.lbConn.Subscribe(ctx, n3c.pubKey, streamName, handler, liftbridge.StartAtOffset(nextMessage))
+		err := n3c.lbConn.Subscribe(ctx, streamName, handler, liftbridge.StartAtOffset(nextMessage))
 		if err != nil {
 			log.Println("node error subscribing read handler: ", err)
 			n3c.removeHandlerContext(n3c.pubKey)
@@ -498,7 +639,7 @@ func (n3c *N3Node) removeHandlerContext(name string) {
 
 }
 
-//
+// Close :
 // shuts down connections, closes handlers
 //
 func (n3c *N3Node) Close() {
@@ -511,7 +652,7 @@ func (n3c *N3Node) Close() {
 	n3c.lbConn.Close()
 
 	// close all handlers by invoking cancelfunc on associated contexts
-	for name, _ := range n3c.handlerContexts {
+	for name := range n3c.handlerContexts {
 		n3c.removeHandlerContext(name)
 	}
 

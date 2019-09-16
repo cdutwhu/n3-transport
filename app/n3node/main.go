@@ -5,13 +5,14 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"time"
 
-	cmn "../../common"
-	"../../n3node"
+	cmn "github.com/nsip/n3-transport/common"
+	"github.com/nsip/n3-transport/n3node"
 	"github.com/pkg/errors"
 )
 
@@ -66,11 +67,13 @@ func launchServices() error {
 	var serviceError error
 	cnclGnatsd, serviceError = launchGnatsd()
 	if serviceError != nil {
-		return errors.Wrap(serviceError, "cannot launch gnatsd service:")
+		fmt.Println("launchGnatsd() error")
+		return errors.Wrap(serviceError, "cannot launch nats-server service:")
 	}
 	log.Println("...gnats service up.")
 	cnclLiftbridge, serviceError = launchLiftbridge()
 	if serviceError != nil {
+		fmt.Println("launchLiftbridge() error")
 		return errors.Wrap(serviceError, "cannot launch liftbridge service:")
 	}
 	log.Println("...liftbridge service up.")
@@ -78,11 +81,13 @@ func launchServices() error {
 	// on the network
 	cnclDispatcher, serviceError = launchDispatcher()
 	if serviceError != nil {
+		fmt.Println("launchDispatcher() error")
 		return errors.Wrap(serviceError, "cannot launch dispatcher service:")
 	}
-	log.Println("...disptcher service up.")
+	log.Println("...dispatcher service up.")
 	cnclInflux, serviceError = launchInflux()
 	if serviceError != nil {
+		fmt.Println("launchInflux() error")
 		return errors.Wrap(serviceError, "cannot launch influx service:")
 	}
 	log.Println("...influx service up.")
@@ -147,7 +152,7 @@ func launchGnatsd() (func(), error) {
 	// set up a management context
 	ctx, cancel := context.WithCancel(context.Background())
 
-	gnatsCmd := exec.CommandContext(ctx, "./gnatsd")
+	gnatsCmd := exec.CommandContext(ctx, "./nats-server")
 	gnatsCmd.Stdout = os.Stdout
 	gnatsCmd.Stderr = os.Stderr
 	gnatsCmd.Dir = "./services/gnatsd"
@@ -195,7 +200,7 @@ func closeServices() {
 	cnclLiftbridge()
 	log.Println("...liftbridge service shut down")
 	cnclGnatsd()
-	log.Println("...gnatsd service shut down")
+	log.Println("...nats-server service shut down")
 	cnclInflux()
 	log.Println("...influx service shut down")
 

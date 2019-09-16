@@ -5,26 +5,44 @@ import (
 	"strings"
 
 	u "github.com/cdutwhu/go-util"
+	w "github.com/cdutwhu/go-wrappers"
+)
+
+type (
+	S  = w.Str
+	Ss = w.Strs
 )
 
 var (
-	PE   = u.PanicOnError
-	PE1  = u.PanicOnError1
-	PH   = u.PanicHandle
-	PC   = u.PanicOnCondition
-	Must = u.Must
+	pe            = u.PanicOnError
+	pe1           = u.PanicOnError1
+	ph            = u.PanicHandle
+	pc            = u.PanicOnCondition
+	must          = u.Must
+	IF            = u.IF
+	trueAssign    = u.TrueAssign
+	IArrIntersect = w.IArrIntersect
+	IArrEleIn     = w.IArrEleIn
 
 	fPf  = fmt.Printf
 	fSf  = fmt.Sprintf
 	fPln = fmt.Println
-
-	sI   = strings.Index
-	sC   = strings.Contains
+	fEf  = fmt.Errorf
 	sSpl = strings.Split
+
+	SINDList = Ss{"subject", "sub", "s", "SUBJECT", "SUB", "S"}
+	PINDList = Ss{"predicate", "pred", "p", "PREDICATE", "PRED", "P"}
+	OINDList = Ss{"object", "obj", "o", "OBJECT", "OBJ", "O"}
+	VINDList = Ss{"version", "ver", "v", "VERSION", "VER", "V"}
 )
 
 const (
 	db         = "tuples"
-	orderByVer = "version" /* NOT supported */
+	orderByVer = "version" /* time NOT supported */
 	orderByTm  = "time"    /* only ORDER BY time supported at this time */
+	MARKDead   = "TOMBSTONE"
+	MARKDelID  = "00000000-0000-0000-0000-000000000000"
+	MARKTerm   = "--------------------------------------" // len(uuid) + 2 : 38
+	DELIPath   = " ~ "
+	DELIChild  = " + "
 )
